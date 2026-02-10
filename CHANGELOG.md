@@ -1,3 +1,9 @@
+## 0.3.2 (2026-02-10)
+
+### Fix
+
+- sync main.py version to 0.3.1 and add to commitizen version_files
+
 ## 0.3.1 (2026-02-10)
 
 ### Fix
