@@ -28,4 +28,5 @@ browser:
   type: "chromium"          # chromium, firefox, webkit
   slow_mo: 100              # ms delay between actions (helps with SharePoint loading)
   timeout: 60000            # ms timeout for page loads
-  state_file: "browser_state/state.json"  # persistent auth state
+  state_file: "browser_state/state.json"  # legacy (no longer used)
+  user_data_dir: "browser_state/profile"  # persistent browser profile for SSO
