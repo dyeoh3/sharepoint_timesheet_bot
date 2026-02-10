@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "sharepoint-timesheet-bot"
-version = "0.3.1"
+version = "0.3.2"
 description = "Automates filling out weekly timesheets on SharePoint PWA"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -32,7 +32,7 @@ timesheet-bot = "main:cli"
 # -- Commitizen ---------------------------------------------------------------
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.3.1"
+version = "0.3.2"
 version_files = [
     "pyproject.toml:^version",
     "main.py:version=",

@@ -8,7 +8,7 @@ from bot.runner import run_timesheet_bot
 
 
 @click.group()
-@click.version_option(version="0.3.1")
+@click.version_option(version="0.3.2")
 def cli():
     """SharePoint Timesheet Bot — automate your weekly timesheet."""
     pass
