@@ -5,6 +5,7 @@
 # Adjust project names and hours to match your typical week
 defaults:
   total_hours_per_day: 8
+  region: "NSW"            # Australian state for public holidays (NSW, VIC, QLD, etc.)
   work_days:
     - Monday
     - Tuesday

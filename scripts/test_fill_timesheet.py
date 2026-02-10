@@ -29,7 +29,9 @@ def test_fill_timesheet(dry_run: bool = False):
     """Open the current week's timesheet and fill hours from config."""
     config = load_config()
     projects = config.get("projects", [])
-    work_days = config.get("defaults", {}).get("work_days", [])
+    defaults = config.get("defaults", {})
+    work_days = defaults.get("work_days", [])
+    region = defaults.get("region", "NSW")
 
     if not projects:
         print("❌ No projects configured in config.yaml")
@@ -38,7 +40,8 @@ def test_fill_timesheet(dry_run: bool = False):
     print("📋 Projects to fill:")
     for p in projects:
         print(f"   • {p['name']}: {p.get('default_hours_per_day', 0)}h/day")
-    print(f"📅 Work days: {', '.join(work_days)}\n")
+    print(f"📅 Work days: {', '.join(work_days)}")
+    print(f"🌏 Region: {region}\n")
 
     with BrowserManager(config) as bm:
         page = bm.page
@@ -83,7 +86,7 @@ def test_fill_timesheet(dry_run: bool = False):
         print()
 
         # 4. Fill hours
-        editor.fill_week_from_config(projects, work_days)
+        editor.fill_week_from_config(projects, work_days, region=region)
 
         print("\n" + "=" * 60)
         print("✅ All hours filled!")

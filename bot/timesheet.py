@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from playwright.sync_api import Locator, Page
 
 from bot.config import get_sharepoint_urls
+from bot.holidays import get_holidays_in_range
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +498,8 @@ class TimesheetEditPage:
         hours_per_day: float,
         work_days: list[str],
         task_name: str = "",
+        period_start: date | None = None,
+        region: str = "NSW",
     ):
         """
         Fill daily hours for a task using the JSGrid controller's
@@ -510,12 +513,23 @@ class TimesheetEditPage:
         Field keys for the day columns:
             ``TPD_col{N}a`` — N = 0..6 for each day of the period, suffix
             ``a`` = Actual.
+
+        Public holidays (based on *region*) are automatically skipped and
+        any pre-existing value on those days is cleared to ``0h``.
         """
         hours_str = (
             f"{int(hours_per_day)}h"
             if hours_per_day == int(hours_per_day)
             else f"{hours_per_day}h"
         )
+
+        # Determine the Monday of the target week
+        if period_start is None:
+            period_start = get_current_week_range()[0]
+
+        # Build the set of holiday dates for the week
+        period_end = period_start + timedelta(days=6)
+        holiday_dates = get_holidays_in_range(period_start, period_end, state=region)
 
         # Find the record key via task_name or left_index correlation
         record_key = None
@@ -524,7 +538,6 @@ class TimesheetEditPage:
 
         if record_key is None:
             # Fallback: correlate left_index → viewIndex
-            # Left pane row i (1-based) maps to viewIndex i-1
             ctrl = self._get_controller_name()
             record_key = self.page.evaluate(f"""() => {{
                 let grid = window['{ctrl}']._jsGridControl;
@@ -539,36 +552,64 @@ class TimesheetEditPage:
             print(f"   ❌ Could not resolve record key for left row {left_index}")
             return
 
-        # Map work_days to TPD column indices (0-based)
+        # Map work_days to TPD column indices (0-based: Mon=0 .. Sun=6)
         day_index_map = {
             "Monday": 0, "Tuesday": 1, "Wednesday": 2,
-            "Thursday": 3, "Friday": 4,
+            "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6,
         }
         target_indices = sorted(day_index_map[d] for d in work_days if d in day_index_map)
 
         ctrl = self._get_controller_name()
         filled = 0
-        skipped = 0
+        cleared = 0
+        skipped_holiday = 0
 
         for day_idx in target_indices:
             field_key = f"TPD_col{day_idx}a"
+            day_date = period_start + timedelta(days=day_idx)
 
-            # Read current value
+            # --- Holiday check ---
+            if day_date in holiday_dates:
+                hol_name = holiday_dates[day_date]
+                print(f"   🏖️  {day_date.strftime('%A %d/%m')} is \"{hol_name}\" — skipping")
+                skipped_holiday += 1
+
+                # Clear any existing value on this holiday
+                current = self.page.evaluate(f"""() => {{
+                    let grid = window['{ctrl}']._jsGridControl;
+                    let rec = grid.GetRecord('{record_key}');
+                    if (!rec) return null;
+                    try {{ return rec.GetLocalizedValue('{field_key}'); }}
+                    catch(e) {{ return null; }}
+                }}""")
+                if current and current not in ("", "0h", "0", None):
+                    self.page.evaluate(f"""() => {{
+                        window['{ctrl}'].WriteLocalizedValueByKey(
+                            '{record_key}', '{field_key}', '0h'
+                        );
+                    }}""")
+                    cleared += 1
+                    print(f"       ↳ Cleared existing \"{current}\" → 0h")
+                continue
+
+            # --- Read current value ---
             current = self.page.evaluate(f"""() => {{
                 let grid = window['{ctrl}']._jsGridControl;
                 let rec = grid.GetRecord('{record_key}');
                 if (!rec) return null;
-                try {{
-                    return rec.GetLocalizedValue('{field_key}');
-                }} catch(e) {{ return null; }}
+                try {{ return rec.GetLocalizedValue('{field_key}'); }}
+                catch(e) {{ return null; }}
             }}""")
 
-            if current and current not in ("", "0h", "0"):
-                print(f"   ⏭️  Day {day_idx} already has \"{current}\" — skipping")
-                skipped += 1
+            if current == hours_str:
+                # Already correct — no need to rewrite
+                filled += 1
                 continue
 
-            # Write the value
+            if current and current not in ("", "0h", "0", None):
+                print(f"   🔄 {day_date.strftime('%A')}: overwriting \"{current}\" → \"{hours_str}\"")
+
+            # --- Write the value ---
             ok = self.page.evaluate(f"""() => {{
                 let ctrl = window['{ctrl}'];
                 try {{
@@ -583,20 +624,25 @@ class TimesheetEditPage:
             if ok:
                 filled += 1
             else:
-                print(f"   ❌ WriteLocalizedValueByKey failed for day {day_idx}")
+                print(f"   ❌ WriteLocalizedValueByKey failed for {day_date.strftime('%A')}")
 
         # Refresh the grid so the UI reflects the new values
-        if filled > 0:
+        if filled > 0 or cleared > 0:
             self.page.evaluate(f"""() => {{
                 window['{ctrl}']._jsGridControl.RefreshAllRows();
             }}""")
             self.page.wait_for_timeout(500)
 
-        print(f"   ✅ Filled {hours_str} in {filled}/{len(target_indices)} day cells"
-              + (f" ({skipped} skipped)" if skipped else ""))
+        parts = [f"✅ Filled {hours_str} in {filled}/{len(target_indices) - skipped_holiday} day cells"]
+        if skipped_holiday:
+            parts.append(f"{skipped_holiday} holiday(s) skipped")
+        if cleared:
+            parts.append(f"{cleared} cleared")
+        print(f"   {', '.join(parts)}")
 
         # Verify values were written
-        self._verify_fill(record_key, target_indices, hours_str)
+        verify_indices = [i for i in target_indices if (period_start + timedelta(days=i)) not in holiday_dates]
+        self._verify_fill(record_key, verify_indices, hours_str)
 
     def _verify_fill(self, record_key: str, day_indices: list[int], expected: str):
         """Read back the TPD_col values to confirm they were written."""
@@ -622,15 +668,33 @@ class TimesheetEditPage:
 
     # ----- High-level fill from config -----------------------------------
 
-    def fill_week_from_config(self, projects: list[dict], work_days: list[str]):
+    def fill_week_from_config(
+        self,
+        projects: list[dict],
+        work_days: list[str],
+        region: str = "NSW",
+        period_start: date | None = None,
+    ):
         """
         Fill an entire week of hours using the config defaults.
 
         For each project in *projects*:
         1. Check if its row already exists in the grid.
         2. If not found, add it via "From Existing Assignments".
-        3. Fill the daily Actual hours.
+        3. Fill the daily Actual hours (skipping public holidays).
         """
+        if period_start is None:
+            period_start = get_current_week_range()[0]
+
+        # Show holiday info for the week
+        period_end = period_start + timedelta(days=6)
+        from bot.holidays import get_holidays_in_range as _get_hols
+        hols = _get_hols(period_start, period_end, state=region)
+        if hols:
+            print(f"\n📅 Public holidays this week ({region}):")
+            for d, name in sorted(hols.items()):
+                print(f"   🏖️  {d.strftime('%A %d/%m/%Y')}: {name}")
+
         for project in projects:
             name = project["name"]
             hours = project.get("default_hours_per_day", 0)
@@ -654,7 +718,12 @@ class TimesheetEditPage:
                     continue
 
             # 3. Fill hours in the Actual row
-            self.fill_hours_for_task(left_index, hours, work_days, task_name=name)
+            self.fill_hours_for_task(
+                left_index, hours, work_days,
+                task_name=name,
+                period_start=period_start,
+                region=region,
+            )
 
     # ----- Save / Submit -------------------------------------------------
 

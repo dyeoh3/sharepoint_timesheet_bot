@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
     "click>=8.1.0",
+    "holidays>=0.40",
 ]
 
 [project.optional-dependencies]
