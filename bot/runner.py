@@ -39,19 +39,25 @@ def run_timesheet_bot(
             bm.wait_for_manual_login(page)
             summary.navigate()
 
-        # 4. Create timesheet for current period if needed
-        summary.create_timesheet_if_needed()
-
-        # 5. Open the current period's timesheet
-        status = summary.get_current_period_status()
-        print(f"📋 Current period status: {status}")
-        summary.click_current_period()
+        # 3. Open (or create) the current week's timesheet
+        try:
+            status = summary.open_timesheet()
+            print(f"📋 Timesheet opened (was: {status})")
+        except RuntimeError as e:
+            print(f"❌ {e}")
+            return
 
         # 6. Fill in hours from config
         editor = TimesheetEditPage(page)
         projects = config.get("projects", [])
-        work_days = config.get("defaults", {}).get("work_days", [])
-        editor.fill_week_from_config(projects, work_days)
+        defaults = config.get("defaults", {})
+        work_days = defaults.get("work_days", [])
+        region = defaults.get("region", "NSW")
+
+        # Give the edit page time to fully render the grid
+        page.wait_for_timeout(2000)
+
+        editor.fill_week_from_config(projects, work_days, region=region)
         print("✅ Hours filled")
 
         if dry_run:
