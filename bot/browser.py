@@ -33,11 +33,12 @@ class BrowserManager:
         # Persistent context keeps the full browser profile (cookies,
         # localStorage, IndexedDB, service workers, etc.) across runs —
         # this is what makes Microsoft SSO sessions survive restarts.
+        # Uses Playwright's bundled Chromium (NOT your installed Chrome)
+        # so the two never interfere with each other.
         self._context = self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.user_data_dir),
             headless=is_headless(),
             slow_mo=self.slow_mo,
-            channel="chrome",
         )
         self._context.set_default_timeout(self.timeout)
         # Persistent contexts come with one page already; use it.
