@@ -89,6 +89,34 @@ def test_fill_timesheet(dry_run: bool = False):
         print("✅ All hours filled!")
         print("=" * 60)
 
+        # Verify cell contents before saving
+        print("\n🔍 Verifying grid values via JSGrid API...")
+        for project in projects:
+            rec_key = editor._find_record_key(project["name"])
+            if rec_key:
+                ctrl = editor._get_controller_name()
+                for day_idx in range(5):
+                    fk = f"TPD_col{day_idx}a"
+                    val = page.evaluate(f"""() => {{
+                        let grid = window['{ctrl}']._jsGridControl;
+                        let rec = grid.GetRecord('{rec_key}');
+                        if (!rec) return null;
+                        try {{ return rec.GetLocalizedValue('{fk}'); }}
+                        catch(e) {{ return null; }}
+                    }}""")
+                    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+                    if day_idx < len(day_names):
+                        print(f"   {day_names[day_idx]}: {val or '(empty)'}")
+            else:
+                print(f"   ⚠️  Could not find record for {project['name']}")
+
+        # Check status bar for total
+        try:
+            status_text = page.locator("[id*='status']").inner_text(timeout=2000)
+            print(f"\n   📊 Status: {status_text.strip()[:120]}")
+        except Exception:
+            pass
+
         if dry_run:
             print("\n🏃 Dry run — NOT saving.")
             print("🔗 Browser is still open — inspect with DevTools (Cmd+Opt+I)")
@@ -98,8 +126,37 @@ def test_fill_timesheet(dry_run: bool = False):
         # 5. Save
         print("\n💾 Saving timesheet...")
         editor.save()
-        print("✅ Timesheet saved!\n")
 
+        # 6. Verify save by checking the page status / total hours
+        page.wait_for_timeout(2000)
+        print("\n🔍 Verifying save...")
+        try:
+            status_text = page.locator("[id*='status']").inner_text(timeout=2000)
+            print(f"   📊 Status after save: {status_text.strip()[:120]}")
+        except Exception:
+            pass
+
+        # Navigate back to summary and check total hours for this period
+        print("\n🔄 Navigating back to summary to verify...")
+        summary.navigate()
+        page.wait_for_timeout(2000)
+
+        result = summary.find_row_for_week()
+        if result:
+            row, row_status = result
+            texts = summary._row_cell_texts(row, max_cells=6)
+            print(f"   Summary row: {' | '.join(texts)}")
+
+            # Check if total hours is non-zero
+            total = next((t for t in texts if "h" in t.lower() and any(c.isdigit() for c in t)), None)
+            if total and total != "0h":
+                print(f"   ✅ Saved total: {total}")
+            else:
+                print(f"   ⚠️  Total shows: {total or 'N/A'}")
+        else:
+            print("   ⚠️  Could not find current week row in summary")
+
+        print("\n✅ Done!")
         input("Press Enter to close the browser...")
 
     print("👋 Browser closed.")

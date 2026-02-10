@@ -428,7 +428,64 @@ class TimesheetEditPage:
                 except Exception:
                     continue
 
-    # ----- Fill hours ----------------------------------------------------
+    # ----- JSGrid Controller helpers --------------------------------------
+
+    def _get_controller_name(self) -> str:
+        """Return the global JS variable name for the JSGrid controller."""
+        name = self.page.evaluate("""() => {
+            for (let key in window) {
+                if (key.includes('JSGridController')) return key;
+            }
+            return null;
+        }""")
+        if not name:
+            raise RuntimeError("Could not find JSGridController on the page")
+        return name
+
+    def _find_record_key(self, task_name: str) -> str | None:
+        """
+        Find the JSGrid record key for a task by matching against
+        ``TS_LINE_TASK_HIERARCHY`` or the cached assignment/project name.
+        """
+        ctrl = self._get_controller_name()
+        target = task_name.lower().strip()
+        return self.page.evaluate(f"""() => {{
+            let ctrl = window['{ctrl}'];
+            let grid = ctrl._jsGridControl;
+            let count = grid.GetViewRecordCount();
+            let target = {repr(target)};
+
+            for (let i = 0; i < count; i++) {{
+                let key = grid.GetRecordKeyByViewIndex(i);
+                let rec = grid.GetRecord(key);
+                if (!rec) continue;
+
+                // Check hierarchy field
+                let hier = (rec.fieldRawDataMap?.['TS_LINE_TASK_HIERARCHY'] || '').toLowerCase();
+                if (hier && target.includes(hier.split(' ').pop()) && hier.length > 0) {{
+                    // Not reliable enough — fall through to property check
+                }}
+
+                // Check cached assignment name (most reliable)
+                let assignProp = rec.properties?.['TS_LINE_CACHED_ASSIGN_NAME'];
+                if (assignProp) {{
+                    for (let k in assignProp) {{
+                        let v = assignProp[k];
+                        if (typeof v === 'string' && v.toLowerCase().includes(target)) {{
+                            return key;
+                        }}
+                    }}
+                }}
+
+                // Check hierarchy contains target
+                if (hier.includes(target) || target.includes(hier)) {{
+                    return key;
+                }}
+            }}
+            return null;
+        }}""")
+
+    # ----- Fill hours (via JSGrid JS API) ---------------------------------
 
     def _actual_row_index(self, left_index: int) -> int:
         """Convert a left-pane row index to the right-pane *Actual* row index."""
@@ -439,18 +496,20 @@ class TimesheetEditPage:
         left_index: int,
         hours_per_day: float,
         work_days: list[str],
+        task_name: str = "",
     ):
         """
-        Fill daily hours into the *Actual* cells of the right-pane row
-        that corresponds to left-pane row *left_index*.
+        Fill daily hours for a task using the JSGrid controller's
+        ``WriteLocalizedValueByKey`` API.
 
-        The right-pane Actual row has 5 cells:
-           cell 0 = "Actual" label
-           cells 1‥4 = day columns (Mon .. Thu/Fri depending on period)
+        This bypasses the unreliable click-and-type approach.  The JSGrid
+        floating editbox is always positioned off-screen and only commits
+        to the first cell when manipulated via DOM events.  The JS API
+        writes directly to the grid's data model instead.
 
-        Clicking a day cell spawns a floating ``<input class="jsgrid-control-editbox">``
-        on the page.  We click the cell, wait for the input to appear, type
-        the hours value, then press Tab to commit.
+        Field keys for the day columns:
+            ``TPD_col{N}a`` — N = 0..6 for each day of the period, suffix
+            ``a`` = Actual.
         """
         hours_str = (
             f"{int(hours_per_day)}h"
@@ -458,72 +517,108 @@ class TimesheetEditPage:
             else f"{hours_per_day}h"
         )
 
-        actual_idx = self._actual_row_index(left_index)
-        right_table = self._right_table()
-        right_rows = right_table.locator("tr")
+        # Find the record key via task_name or left_index correlation
+        record_key = None
+        if task_name:
+            record_key = self._find_record_key(task_name)
 
-        if actual_idx >= right_rows.count():
-            print(f"   ❌ Right-pane row {actual_idx} out of range ({right_rows.count()} rows)")
+        if record_key is None:
+            # Fallback: correlate left_index → viewIndex
+            # Left pane row i (1-based) maps to viewIndex i-1
+            ctrl = self._get_controller_name()
+            record_key = self.page.evaluate(f"""() => {{
+                let grid = window['{ctrl}']._jsGridControl;
+                let viewIdx = {left_index - 1};
+                if (viewIdx >= 0 && viewIdx < grid.GetViewRecordCount()) {{
+                    return grid.GetRecordKeyByViewIndex(viewIdx);
+                }}
+                return null;
+            }}""")
+
+        if record_key is None:
+            print(f"   ❌ Could not resolve record key for left row {left_index}")
             return
 
-        actual_row = right_rows.nth(actual_idx)
-        day_cells = actual_row.locator("td[role='gridcell']")
-        total_cells = day_cells.count()
-
-        # cell 0 = "Actual" label, cells 1+ = day columns
-        day_count = total_cells - 1  # number of day columns
-        if day_count <= 0:
-            print("   ❌ No day columns found in Actual row")
-            return
-
-        # Map work_days to 0-based day indices
+        # Map work_days to TPD column indices (0-based)
         day_index_map = {
             "Monday": 0, "Tuesday": 1, "Wednesday": 2,
             "Thursday": 3, "Friday": 4,
         }
         target_indices = sorted(day_index_map[d] for d in work_days if d in day_index_map)
 
+        ctrl = self._get_controller_name()
         filled = 0
+        skipped = 0
+
         for day_idx in target_indices:
-            cell_offset = day_idx + 1  # +1 because cell 0 is the "Actual" label
-            if cell_offset >= total_cells:
-                # This day column doesn't exist in the grid (e.g. short week)
+            field_key = f"TPD_col{day_idx}a"
+
+            # Read current value
+            current = self.page.evaluate(f"""() => {{
+                let grid = window['{ctrl}']._jsGridControl;
+                let rec = grid.GetRecord('{record_key}');
+                if (!rec) return null;
+                try {{
+                    return rec.GetLocalizedValue('{field_key}');
+                }} catch(e) {{ return null; }}
+            }}""")
+
+            if current and current not in ("", "0h", "0"):
+                print(f"   ⏭️  Day {day_idx} already has \"{current}\" — skipping")
+                skipped += 1
                 continue
 
-            cell = day_cells.nth(cell_offset)
+            # Write the value
+            ok = self.page.evaluate(f"""() => {{
+                let ctrl = window['{ctrl}'];
+                try {{
+                    ctrl.WriteLocalizedValueByKey('{record_key}', '{field_key}', '{hours_str}');
+                    return true;
+                }} catch(e) {{
+                    console.error('WriteLocalizedValueByKey error:', e);
+                    return false;
+                }}
+            }}""")
 
-            # Check if already filled
-            try:
-                existing = cell.inner_text(timeout=500).strip()
-                if existing and existing not in ("", "0h", "0"):
-                    print(f"   ⏭️  Day {day_idx} already has \"{existing}\" — skipping")
-                    continue
-            except Exception:
-                pass
-
-            # Click the cell to activate the floating editbox
-            cell.click()
-            self.page.wait_for_timeout(300)
-
-            # The floating input should now be the active element
-            # It has class "jsgrid-control-editbox"
-            editbox = self.page.locator("input.jsgrid-control-editbox:visible")
-            if editbox.count() == 0:
-                print(f"   ⚠️  Editbox not found after clicking day {day_idx} — retrying")
-                cell.dblclick()
-                self.page.wait_for_timeout(300)
-                editbox = self.page.locator("input.jsgrid-control-editbox:visible")
-
-            if editbox.count() > 0:
-                editbox.first.fill("")
-                editbox.first.fill(hours_str)
-                editbox.first.press("Tab")
-                self.page.wait_for_timeout(200)
+            if ok:
                 filled += 1
             else:
-                print(f"   ❌ Could not activate editbox for day {day_idx}")
+                print(f"   ❌ WriteLocalizedValueByKey failed for day {day_idx}")
 
-        print(f"   ✅ Filled {hours_str} in {filled}/{len(target_indices)} day cells")
+        # Refresh the grid so the UI reflects the new values
+        if filled > 0:
+            self.page.evaluate(f"""() => {{
+                window['{ctrl}']._jsGridControl.RefreshAllRows();
+            }}""")
+            self.page.wait_for_timeout(500)
+
+        print(f"   ✅ Filled {hours_str} in {filled}/{len(target_indices)} day cells"
+              + (f" ({skipped} skipped)" if skipped else ""))
+
+        # Verify values were written
+        self._verify_fill(record_key, target_indices, hours_str)
+
+    def _verify_fill(self, record_key: str, day_indices: list[int], expected: str):
+        """Read back the TPD_col values to confirm they were written."""
+        ctrl = self._get_controller_name()
+        mismatches = []
+        for day_idx in day_indices:
+            field_key = f"TPD_col{day_idx}a"
+            actual = self.page.evaluate(f"""() => {{
+                let grid = window['{ctrl}']._jsGridControl;
+                let rec = grid.GetRecord('{record_key}');
+                if (!rec) return null;
+                try {{ return rec.GetLocalizedValue('{field_key}'); }}
+                catch(e) {{ return null; }}
+            }}""")
+            if actual != expected:
+                mismatches.append((day_idx, actual))
+
+        if mismatches:
+            for day_idx, actual in mismatches:
+                print(f"   ⚠️  Verify: day {day_idx} has \"{actual}\" (expected \"{expected}\")")
+        else:
+            print(f"   ✅ Verified: all {len(day_indices)} day cells read back \"{expected}\"")
 
     # ----- High-level fill from config -----------------------------------
 
@@ -559,12 +654,22 @@ class TimesheetEditPage:
                     continue
 
             # 3. Fill hours in the Actual row
-            self.fill_hours_for_task(left_index, hours, work_days)
+            self.fill_hours_for_task(left_index, hours, work_days, task_name=name)
 
     # ----- Save / Submit -------------------------------------------------
 
     def save(self):
         """Click the Save button in the TIMESHEET ribbon."""
+        # Check if there are unsaved changes
+        try:
+            ctrl = self._get_controller_name()
+            is_dirty = self.page.evaluate(f"() => window['{ctrl}'].IsDirty()")
+            if not is_dirty:
+                print("💾 No unsaved changes — skipping save")
+                return
+        except Exception:
+            pass  # proceed with save anyway
+
         save_btn = self.page.locator(
             f"a[id='{self._SAVE_BTN_ID}']"
         )
@@ -573,7 +678,18 @@ class TimesheetEditPage:
             self._activate_timesheet_tab()
         save_btn.click()
         self.page.wait_for_load_state("load")
-        print("💾 Timesheet saved")
+        self.page.wait_for_timeout(2000)
+
+        # Verify save completed (dirty flag should be cleared)
+        try:
+            ctrl = self._get_controller_name()
+            is_dirty = self.page.evaluate(f"() => window['{ctrl}'].IsDirty()")
+            if is_dirty:
+                print("⚠️  Timesheet may not have saved (still dirty)")
+            else:
+                print("💾 Timesheet saved successfully")
+        except Exception:
+            print("💾 Timesheet saved")
 
     def submit(self):
         """Click the Send / Submit button in the TIMESHEET ribbon."""
