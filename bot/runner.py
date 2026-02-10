@@ -31,11 +31,12 @@ def run_timesheet_bot(
         summary = TimesheetSummaryPage(page)
         summary.navigate()
 
-        # 2. Handle Microsoft SSO if redirected
-        bm.login_if_needed(page)
-
-        # 3. If we were redirected, navigate again
-        if "MyTSSummary" not in page.url:
+        # 2. Handle login — let user authenticate manually if needed
+        if bm.is_on_login_page(page):
+            if not bm.has_valid_session():
+                print("⚠️  No saved session found. Run 'python main.py login' first,")
+                print("   or log in now in the browser window.")
+            bm.wait_for_manual_login(page)
             summary.navigate()
 
         # 4. Create timesheet for current period if needed

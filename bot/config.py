@@ -20,18 +20,6 @@ def load_config(config_path: str | None = None) -> dict:
         return yaml.safe_load(f)
 
 
-def get_credentials() -> tuple[str, str]:
-    """Return (email, password) from environment variables."""
-    email = os.getenv("MS_EMAIL")
-    password = os.getenv("MS_PASSWORD")
-    if not email or not password:
-        raise EnvironmentError(
-            "MS_EMAIL and MS_PASSWORD must be set in .env file. "
-            "Copy .env.example to .env and fill in your credentials."
-        )
-    return email, password
-
-
 def get_sharepoint_urls() -> tuple[str, str]:
     """Return (base_url, timesheet_url) from environment variables."""
     base_url = os.getenv("SHAREPOINT_BASE_URL")

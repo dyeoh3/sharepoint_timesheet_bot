@@ -25,7 +25,7 @@ def fill(config, dry_run, submit):
 
 @cli.command()
 def login():
-    """Open browser and log into SharePoint (saves auth state for reuse)."""
+    """Open browser, let you log in manually, and save the session for reuse."""
     from bot.browser import BrowserManager
     from bot.config import load_config
     from bot.timesheet import TimesheetSummaryPage
@@ -35,9 +35,9 @@ def login():
         page = bm.page
         summary = TimesheetSummaryPage(page)
         summary.navigate()
-        bm.login_if_needed(page)
-        print("✅ Logged in. Auth state saved.")
-        print("   Future runs will reuse this session.")
+        bm.wait_for_manual_login(page)
+        print("💾 Auth state saved to:", bm.state_file)
+        print("   Future runs will skip login automatically.")
         input("Press Enter to close the browser...")
 
 
@@ -53,9 +53,11 @@ def inspect():
         page = bm.page
         summary = TimesheetSummaryPage(page)
         summary.navigate()
-        bm.login_if_needed(page)
-        if "MyTSSummary" not in page.url:
+
+        if bm.is_on_login_page(page):
+            bm.wait_for_manual_login(page)
             summary.navigate()
+
         print("🔍 Browser open for inspection. Check selectors with DevTools.")
         print(f"   Current URL: {page.url}")
         input("Press Enter to close the browser...")
