@@ -1,3 +1,9 @@
+## 0.3.0 (2026-02-10)
+
+### Feat
+
+- added open website functionality and manual login prompt if creds not saved
+
 ## 0.2.0 (2026-02-10)
 
 ### Feat
