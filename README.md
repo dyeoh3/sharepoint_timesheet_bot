@@ -13,6 +13,7 @@ Automates filling, saving, submitting, and recalling weekly timesheets on ShareP
 - **Submit** — submits timesheets for approval after filling
 - **Recall** — recalls submitted/approved timesheets so they can be re-edited
 - **Persistent SSO** — Microsoft login is saved across runs (manual login only needed once)
+- **Scheduled runs** — macOS LaunchAgent runs the bot every Friday at 9 AM automatically
 
 ## Setup
 
@@ -200,6 +201,65 @@ The bot uses a **persistent Chromium profile** (`browser_state/profile/`) rather
 | Session expired | Bot detects this and falls back to manual login prompt |
 | Clear session | Delete the `browser_state/profile/` directory |
 
+## Scheduled Execution (macOS)
+
+The bot can run automatically every Friday at 9 AM using a macOS LaunchAgent. The agent survives reboots and handles sleep/wake gracefully via `launchd`.
+
+### Install the schedule
+
+```bash
+python main.py schedule install
+```
+
+This symlinks the plist to `~/Library/LaunchAgents/` and loads it. The bot will run every Friday at 09:00 using the wrapper script `scripts/run_timesheet.sh`, which:
+
+1. Kills any stale Chromium processes and removes `SingletonLock`
+2. Activates the Python virtual environment
+3. Runs `scripts/test_fill_timesheet.py --submit` for the current week
+4. Writes timestamped output to `logs/timesheet_YYYYMMDD_HHMMSS.log`
+
+### Uninstall
+
+```bash
+python main.py schedule uninstall
+```
+
+### Monitoring
+
+```bash
+# Check if the agent is installed and loaded
+python main.py schedule status
+
+# View the most recent run's log
+python main.py schedule logs
+
+# Follow the log in real time
+python main.py schedule logs -f
+
+# Show last 100 lines
+python main.py schedule logs -n 100
+```
+
+### Manual trigger
+
+Run the wrapper script on demand (exactly what the scheduler runs):
+
+```bash
+python main.py schedule run
+```
+
+### Shell scripts
+
+You can also manage the agent directly with the shell scripts:
+
+```bash
+# Install
+./scripts/install_launchagent.sh
+
+# Uninstall
+./scripts/uninstall_launchagent.sh
+```
+
 ## Project Structure
 
 ```
@@ -212,11 +272,16 @@ sharepoint_timesheet_bot/
 │   ├── runner.py            # High-level orchestrator (used by main.py)
 │   └── timesheet.py         # SharePoint page objects & JSGrid interactions
 ├── scripts/
+│   ├── run_timesheet.sh     # Wrapper script for scheduled runs
+│   ├── install_launchagent.sh   # Install the macOS LaunchAgent
+│   ├── uninstall_launchagent.sh # Uninstall the macOS LaunchAgent
 │   ├── test_open_site.py    # Smoke test — login & page element checks
-│   ├── test_open_timesheet.py  # Open current week's timesheet
-│   └── test_fill_timesheet.py  # Batch fill / submit / recall
+│   ├── test_open_timesheet.py   # Open current week's timesheet
+│   └── test_fill_timesheet.py   # Batch fill / submit / recall
 ├── browser_state/
 │   └── profile/             # Persistent Chromium profile (gitignored)
+├── logs/                    # Run logs (gitignored)
+├── com.darren.timesheet-bot.plist  # macOS LaunchAgent config
 ├── .env                     # SharePoint URLs & runtime flags (gitignored)
 ├── .env.example             # Template for .env
 ├── .gitignore
