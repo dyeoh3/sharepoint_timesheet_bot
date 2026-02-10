@@ -47,7 +47,9 @@ def open_website():
             # Navigate again after login
             page.goto(timesheet_url, wait_until="domcontentloaded")
 
-        page.wait_for_load_state("networkidle")
+        # Wait for the page to settle — use load instead of networkidle
+        # because SharePoint keeps background requests running indefinitely.
+        page.wait_for_load_state("load")
 
         print(f"📄 Page loaded!")
         print(f"   Title: {page.title()}")

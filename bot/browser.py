@@ -95,7 +95,7 @@ class BrowserManager:
             print("\n🔄 Saved session found — waiting for auto-redirect...")
             try:
                 page.wait_for_url(lambda url: sp_host in url, timeout=15_000)
-                page.wait_for_load_state("networkidle")
+                page.wait_for_load_state("load")
                 print("✅ Auto-logged in via saved session!\n")
                 return
             except Exception:
@@ -115,7 +115,7 @@ class BrowserManager:
         )
 
         # Give the page a moment to fully load after redirect
-        page.wait_for_load_state("networkidle")
+        page.wait_for_load_state("load")
         print(f"✅ Logged in! Now at: {page.url}")
         print("   Session will be saved for future runs.\n")
 
