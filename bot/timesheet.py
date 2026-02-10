@@ -1,6 +1,23 @@
 """
-SharePoint Timesheet Page Object
-Encapsulates all interactions with the SharePoint PWA Timesheet pages.
+SharePoint PWA Timesheet Page Objects.
+
+Provides two page objects for automating the SharePoint Project Web App
+timesheet workflow:
+
+- ``TimesheetSummaryPage`` — interacts with MyTSSummary.aspx (the list of
+  all timesheet periods).  Supports opening, selecting, and recalling
+  timesheets.
+
+- ``TimesheetEditPage`` — interacts with Timesheet.aspx (the JSGrid data-
+  entry grid).  Fills Actual hours, clears Planned hours, saves, and
+  submits via the SharePoint ribbon UI.
+
+Key implementation detail:
+    The JSGrid stores work-duration values internally in units of
+    **1/1000th of a minute** — i.e. ``hours × 60,000``.  For example
+    8 hours = ``480,000``.  All writes go through
+    ``grid.UpdateProperties()`` with ``SP.JsGrid.CreateValidatedPropertyUpdate``
+    to reliably track changes via the grid's diff pipeline.
 """
 
 from __future__ import annotations
@@ -46,6 +63,7 @@ def _parse_period_dates(text: str) -> tuple[date, date] | None:
 
 # Status values a timesheet can have on the summary page.
 EDITABLE_STATUSES = {"not yet created", "in progress"}
+RECALLABLE_STATUSES = {"submitted", "approved"}
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +189,221 @@ class TimesheetSummaryPage:
         print(f"🖱️  Clicking: \"{link_text}\" (status: {status})")
         link.click()
         self.page.wait_for_load_state("load")
+        # SharePoint may redirect after creating a new timesheet;
+        # wait for the network to settle so the JSGrid is ready.
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass  # best-effort — fall through and let retry logic handle it
 
         return status
+
+    def select_timesheet_row(self, target_monday: date | None = None) -> tuple[Locator, str]:
+        """
+        Select (click) a timesheet row on the summary page so that
+        ribbon buttons like *Recall* become enabled.
+
+        Returns:
+            (row_locator, status_string)
+
+        Raises:
+            RuntimeError: If the row cannot be found.
+        """
+        if target_monday is None:
+            target_monday = get_current_week_range()[0]
+
+        result = self.find_row_for_week(target_monday)
+        if result is None:
+            raise RuntimeError(
+                f"Could not find a timesheet period for week starting "
+                f"{target_monday.strftime('%d/%m/%Y')}."
+            )
+
+        row, status = result
+
+        # Click the row to select it (click the first <td> that isn't a link
+        # to avoid accidentally opening the timesheet).
+        cells = row.locator("td")
+        clicked = False
+        for i in range(cells.count()):
+            cell = cells.nth(i)
+            # Skip cells that contain links (clicking those would navigate)
+            if cell.locator("a").count() > 0:
+                continue
+            try:
+                cell.click(timeout=2000)
+                clicked = True
+                break
+            except Exception:
+                continue
+
+        if not clicked:
+            # Fallback — click the row itself
+            row.click()
+
+        self.page.wait_for_timeout(1000)
+        print(f"   🖱️  Selected timesheet row (status: {status})")
+        return row, status
+
+    def recall(self, target_monday: date | None = None):
+        """
+        Recall a submitted/approved timesheet so it can be edited again.
+
+        The flow on the My Timesheets summary page is:
+        1. Click the timesheet row to select it.
+        2. Click the **Recall** button in the ribbon.
+        3. Confirm in the dialog if one appears.
+
+        After recall the timesheet status changes back to **In Progress**.
+
+        Args:
+            target_monday: The Monday of the week to recall.
+
+        Raises:
+            RuntimeError: If the timesheet is not in a recallable state.
+        """
+        if target_monday is None:
+            target_monday = get_current_week_range()[0]
+
+        # Ensure we're on the summary page
+        if "MyTSSummary" not in self.page.url:
+            self.navigate()
+            self.page.wait_for_timeout(2000)
+
+        # 1. Find and validate the row
+        result = self.find_row_for_week(target_monday)
+        if result is None:
+            raise RuntimeError(
+                f"Could not find a timesheet period for week starting "
+                f"{target_monday.strftime('%d/%m/%Y')}."
+            )
+
+        _, status = result
+        status_lower = status.lower()
+
+        if status_lower not in RECALLABLE_STATUSES:
+            raise RuntimeError(
+                f"Timesheet for week {target_monday.strftime('%d/%m/%Y')} "
+                f"has status '{status}' — only Submitted or Approved "
+                f"timesheets can be recalled."
+            )
+
+        # 2. Select the row (click it so ribbon buttons are enabled)
+        self.select_timesheet_row(target_monday)
+
+        # 3. Click the Recall button in the ribbon
+        #    SharePoint PWA uses a TIMESHEET contextual tab on the summary
+        #    page with a Recall button.
+        print(f"   📥 Recalling timesheet for {target_monday.strftime('%d/%m/%Y')}...")
+
+        # Try known ribbon ID patterns for the Recall button
+        recall_btn = None
+        recall_selectors = [
+            "a[id*='Recall']",
+            "a[id*='recall']",
+            "span:has-text('Recall')",
+            "a:has(span:has-text('Recall'))",
+            "a:has(img[alt*='Recall'])",
+        ]
+
+        for sel in recall_selectors:
+            loc = self.page.locator(sel).first
+            try:
+                if loc.is_visible(timeout=1000):
+                    recall_btn = loc
+                    break
+            except Exception:
+                continue
+
+        if recall_btn is None:
+            # The ribbon tab may not be active — try activating TIMESHEET tab
+            tab_selectors = [
+                "li#Ribbon\\.ContextualTabs\\.TiedMode\\.Home-title a",
+                "a[title*='Timesheet']",
+                "a[title*='TIMESHEET']",
+            ]
+            for sel in tab_selectors:
+                try:
+                    tab = self.page.locator(sel).first
+                    if tab.is_visible(timeout=1000):
+                        tab.click()
+                        self.page.wait_for_timeout(1000)
+                        break
+                except Exception:
+                    continue
+
+            # Re-select the row (tab click may deselect)
+            self.select_timesheet_row(target_monday)
+            self.page.wait_for_timeout(500)
+
+            # Retry finding the Recall button
+            for sel in recall_selectors:
+                loc = self.page.locator(sel).first
+                try:
+                    if loc.is_visible(timeout=1000):
+                        recall_btn = loc
+                        break
+                except Exception:
+                    continue
+
+        if recall_btn is None:
+            # Last resort — dump all ribbon button IDs for debugging
+            buttons = self.page.evaluate("""() => {
+                let btns = document.querySelectorAll('a[id*="Ribbon"]');
+                return Array.from(btns).map(b => ({
+                    id: b.id,
+                    text: b.innerText?.substring(0, 50),
+                    visible: b.offsetParent !== null
+                }));
+            }""")
+            visible = [b for b in buttons if b.get("visible")]
+            print("   🔍 Visible ribbon buttons:")
+            for b in visible:
+                print(f"      - {b['id']}: {b.get('text', '')}")
+            raise RuntimeError("Could not find the Recall button in the ribbon")
+
+        # 4. Set up a dialog handler BEFORE clicking — Recall triggers
+        #    a native window.confirm() ("Are you sure you want to recall…")
+        dialog_handled = False
+
+        def _handle_dialog(dialog):
+            nonlocal dialog_handled
+            print(f"   🗨️  Dialog: {dialog.message}")
+            dialog.accept()
+            dialog_handled = True
+
+        self.page.on("dialog", _handle_dialog)
+
+        recall_btn.click()
+        # Give the dialog a moment to fire and be accepted
+        self.page.wait_for_timeout(3000)
+        self.page.remove_listener("dialog", _handle_dialog)
+        print("   🖱️  Clicked Recall button")
+
+        if dialog_handled:
+            print("   ✅ Confirmed recall in dialog")
+
+        # Wait for page to settle
+        self.page.wait_for_load_state("load")
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(2000)
+
+        # 5. Verify the recall succeeded
+        self.navigate()
+        self.page.wait_for_timeout(2000)
+        result = self.find_row_for_week(target_monday)
+        if result:
+            _, new_status = result
+            new_lower = new_status.lower()
+            if new_lower in EDITABLE_STATUSES:
+                print(f"   ✅ Timesheet recalled (status: {new_status})")
+            else:
+                print(f"   ⚠️  Status after recall: {new_status}")
+        else:
+            print("   ⚠️  Could not verify recall — row not found")
 
     def get_all_periods(self) -> list[dict]:
         """
@@ -432,16 +663,30 @@ class TimesheetEditPage:
     # ----- JSGrid Controller helpers --------------------------------------
 
     def _get_controller_name(self) -> str:
-        """Return the global JS variable name for the JSGrid controller."""
-        name = self.page.evaluate("""() => {
-            for (let key in window) {
-                if (key.includes('JSGridController')) return key;
-            }
-            return null;
-        }""")
-        if not name:
-            raise RuntimeError("Could not find JSGridController on the page")
-        return name
+        """Return the global JS variable name for the JSGrid controller.
+
+        Retries a few times to handle cases where the execution context
+        is destroyed by a late navigation (e.g. SharePoint redirect after
+        creating a new timesheet).
+        """
+        from playwright._impl._errors import Error as PlaywrightError
+
+        for attempt in range(5):
+            try:
+                self.page.wait_for_load_state("load")
+                name = self.page.evaluate("""() => {
+                    for (let key in window) {
+                        if (key.includes('JSGridController')) return key;
+                    }
+                    return null;
+                }""")
+                if name:
+                    return name
+            except PlaywrightError:
+                pass  # context destroyed — page is still navigating
+            self.page.wait_for_timeout(2000)
+
+        raise RuntimeError("Could not find JSGridController on the page")
 
     def _find_record_key(self, task_name: str) -> str | None:
         """
@@ -491,20 +736,28 @@ class TimesheetEditPage:
         region: str = "NSW",
     ):
         """
-        Fill daily hours for a task using the JSGrid controller's
-        ``WriteLocalizedValueByKey`` API.
+        Fill daily Actual hours for a single task row.
 
-        This bypasses the unreliable click-and-type approach.  The JSGrid
-        floating editbox is always positioned off-screen and only commits
-        to the first cell when manipulated via DOM events.  The JS API
-        writes directly to the grid's data model instead.
+        Uses the JSGrid ``UpdateProperties`` API to batch-write values
+        directly to the grid's data model — bypassing the unreliable
+        click-and-type approach.
 
-        Field keys for the day columns:
-            ``TPD_col{N}a`` — N = 0..6 for each day of the period, suffix
-            ``a`` = Actual.
+        Data values are stored in **1/1000th of a minute** units
+        (``hours × 60,000``).  For example 8h = 480,000.
 
-        Public holidays (based on *region*) are automatically skipped and
-        any pre-existing value on those days is cleared to ``0h``.
+        Field keys: ``TPD_col{N}a`` where N = 0..6 (Mon..Sun), suffix
+        ``a`` = Actual.
+
+        Public holidays are automatically skipped and any pre-existing
+        value on those days is cleared to ``0h``.
+
+        Args:
+            left_index:    1-based row index in the left pane.
+            hours_per_day: Hours to fill per work day.
+            work_days:     Day names to fill.
+            task_name:     Task name for record-key lookup.
+            period_start:  Monday of the target week.
+            region:        Australian state code for holiday detection.
         """
         hours_str = (
             f"{int(hours_per_day)}h"
@@ -553,6 +806,9 @@ class TimesheetEditPage:
         cleared = 0
         skipped_holiday = 0
 
+        # Collect all property updates to batch via UpdateProperties
+        updates_js_parts: list[str] = []
+
         for day_idx in target_indices:
             field_key = f"TPD_col{day_idx}a"
             day_date = period_start + timedelta(days=day_idx)
@@ -572,13 +828,11 @@ class TimesheetEditPage:
                     catch(e) {{ return null; }}
                 }}""")
                 if current and current not in ("", "0h", "0", None):
-                    self.page.evaluate(f"""() => {{
-                        window['{ctrl}'].WriteDataValueByKey(
-                            '{record_key}', '{field_key}', 0
-                        );
-                    }}""")
+                    updates_js_parts.append(
+                        f"SP.JsGrid.CreateValidatedPropertyUpdate('{record_key}', '{field_key}', 0, '0h')"
+                    )
                     cleared += 1
-                    print(f"       ↳ Cleared existing \"{current}\" → 0h")
+                    print(f"       ↳ Clearing existing \"{current}\" → 0h")
                 continue
 
             # --- Read current value ---
@@ -598,27 +852,27 @@ class TimesheetEditPage:
             if current and current not in ("", "0h", "0", None):
                 print(f"   🔄 {day_date.strftime('%A')}: overwriting \"{current}\" → \"{hours_str}\"")
 
-            # --- Write the value ---
-            ok = self.page.evaluate(f"""() => {{
-                let ctrl = window['{ctrl}'];
-                try {{
-                    ctrl.WriteLocalizedValueByKey('{record_key}', '{field_key}', '{hours_str}');
-                    return true;
-                }} catch(e) {{
-                    console.error('WriteLocalizedValueByKey error:', e);
-                    return false;
-                }}
-            }}""")
+            # Queue update — data value in 1/1000th of a minute (hours × 60,000)
+            ms_value = int(hours_per_day * 60_000)
+            updates_js_parts.append(
+                f"SP.JsGrid.CreateValidatedPropertyUpdate('{record_key}', '{field_key}', {ms_value}, '{hours_str}')"
+            )
+            filled += 1
 
-            if ok:
-                filled += 1
-            else:
-                print(f"   ❌ WriteLocalizedValueByKey failed for {day_date.strftime('%A')}")
-
-        # Refresh the grid so the UI reflects the new values
-        if filled > 0 or cleared > 0:
+        # Apply all updates in a single UpdateProperties call
+        if updates_js_parts:
+            updates_array = ",\n                ".join(updates_js_parts)
             self.page.evaluate(f"""() => {{
-                window['{ctrl}']._jsGridControl.RefreshAllRows();
+                let ctrl = window['{ctrl}'];
+                let grid = ctrl._jsGridControl;
+                let updates = [
+                    {updates_array}
+                ];
+                let changeKey = grid.UpdateProperties(updates, null, null);
+                if (changeKey) {{
+                    ctrl.notifyWritePending(changeKey);
+                }}
+                grid.RefreshAllRows();
             }}""")
             self.page.wait_for_timeout(500)
 
@@ -688,6 +942,9 @@ class TimesheetEditPage:
         cleared = 0
         skipped_holiday = 0
 
+        # Collect updates for batch UpdateProperties call
+        updates_js_parts: list[str] = []
+
         for day_idx in target_indices:
             field_key = f"TPD_col{day_idx}a"
             day_date = period_start + timedelta(days=day_idx)
@@ -706,13 +963,11 @@ class TimesheetEditPage:
                     catch(e) {{ return null; }}
                 }}""")
                 if current and current not in ("", "0h", "0", None):
-                    self.page.evaluate(f"""() => {{
-                        window['{ctrl}'].WriteDataValueByKey(
-                            '{record_key}', '{field_key}', 0
-                        );
-                    }}""")
+                    updates_js_parts.append(
+                        f"SP.JsGrid.CreateValidatedPropertyUpdate('{record_key}', '{field_key}', 0, '0h')"
+                    )
                     cleared += 1
-                    print(f"       ↳ Cleared existing \"{current}\" → 0h")
+                    print(f"       ↳ Clearing existing \"{current}\" → 0h")
                 continue
 
             # Get the planned value for this day
@@ -738,16 +993,31 @@ class TimesheetEditPage:
             else:
                 print(f"   📋 {day_date.strftime('%A')}: Planned → Actual \"{planned_val}\"")
 
-            self.page.evaluate(f"""() => {{
-                window['{ctrl}'].WriteLocalizedValueByKey(
-                    '{record_key}', '{field_key}', '{planned_val}'
-                );
-            }}""")
+            # Parse hours from planned_val (e.g. "8h", "8.24h") → 1/1000th min
+            try:
+                hours_num = float(planned_val.replace("h", ""))
+                ms_value = int(hours_num * 60_000)
+            except (ValueError, AttributeError):
+                ms_value = 0
+            updates_js_parts.append(
+                f"SP.JsGrid.CreateValidatedPropertyUpdate('{record_key}', '{field_key}', {ms_value}, '{planned_val}')"
+            )
             filled += 1
 
-        if filled > 0 or cleared > 0:
+        # Apply all updates
+        if updates_js_parts:
+            updates_array = ",\n                ".join(updates_js_parts)
             self.page.evaluate(f"""() => {{
-                window['{ctrl}']._jsGridControl.RefreshAllRows();
+                let ctrl = window['{ctrl}'];
+                let grid = ctrl._jsGridControl;
+                let updates = [
+                    {updates_array}
+                ];
+                let changeKey = grid.UpdateProperties(updates, null, null);
+                if (changeKey) {{
+                    ctrl.notifyWritePending(changeKey);
+                }}
+                grid.RefreshAllRows();
             }}""")
             self.page.wait_for_timeout(500)
 
@@ -785,20 +1055,99 @@ class TimesheetEditPage:
         }}""")
         return {int(k): v for k, v in raw.items()} if raw else {}
 
+    # ----- Clear Planned values -----------------------------------------
+
+    def _clear_planned_hours(
+        self,
+        record_key: str,
+        work_days: list[str],
+        task_name: str = "",
+        period_start: date | None = None,
+    ):
+        """
+        Zero-out Planned values (``TPD_col{N}p``) for a task row.
+
+        Uses ``grid.UpdateProperties`` with
+        ``SP.JsGrid.CreateValidatedPropertyUpdate`` to reliably clear
+        planned cells via the grid's change-tracking pipeline.
+        """
+        if period_start is None:
+            period_start = get_current_week_range()[0]
+
+        day_index_map = {
+            "Monday": 0, "Tuesday": 1, "Wednesday": 2,
+            "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6,
+        }
+        target_indices = sorted(day_index_map[d] for d in work_days if d in day_index_map)
+
+        ctrl = self._get_controller_name()
+        updates_js_parts: list[str] = []
+        cleared = 0
+
+        for day_idx in target_indices:
+            field_key = f"TPD_col{day_idx}p"
+
+            # Read current planned value
+            current = self.page.evaluate(f"""() => {{
+                let grid = window['{ctrl}']._jsGridControl;
+                let rec = grid.GetRecord('{record_key}');
+                if (!rec) return null;
+                try {{ return rec.GetLocalizedValue('{field_key}'); }}
+                catch(e) {{ return null; }}
+            }}""")
+
+            if not current or current in ("", "0h", "0", None):
+                continue
+
+            updates_js_parts.append(
+                f"SP.JsGrid.CreateValidatedPropertyUpdate('{record_key}', '{field_key}', 0, '0h')"
+            )
+
+            day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            print(f"   🗑️  Planned {day_names[day_idx]}: \"{current}\" → 0h")
+            cleared += 1
+
+        if updates_js_parts:
+            updates_array = ",\n                ".join(updates_js_parts)
+            self.page.evaluate(f"""() => {{
+                let ctrl = window['{ctrl}'];
+                let grid = ctrl._jsGridControl;
+                let updates = [
+                    {updates_array}
+                ];
+                let changeKey = grid.UpdateProperties(updates, null, null);
+                if (changeKey) {{
+                    ctrl.notifyWritePending(changeKey);
+                }}
+                grid.RefreshAllRows();
+            }}""")
+            self.page.wait_for_timeout(500)
+            print(f"   ✅ Cleared Planned values in {cleared} cells")
+
+            # Verify the clear
+            remaining = self._read_planned_values(record_key)
+            work_remaining = {k: v for k, v in remaining.items() if k in target_indices}
+            if work_remaining:
+                summary = ", ".join(
+                    f"{['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][k]}={v}"
+                    for k, v in sorted(work_remaining.items())
+                )
+                print(f"   ⚠️  Some Planned values may not have cleared: {summary}")
+            else:
+                print(f"   ✅ Verified: all Planned values are now 0")
+        else:
+            print(f"   ✅ Planned hours already clear for {task_name}")
+
     # ----- Clear tasks not in config ------------------------------------
 
     def _clear_non_config_tasks(self, config_task_names: list[str]):
         """
-        Zero-out **Actual** hours for any grid task whose name is NOT in
-        *config_task_names*.  The config is the single source of truth —
-        only listed tasks should have filled Actual values.
-
-        Note: Planned values (``TPD_col{N}p``) are read-only and come
-        from the server-side project schedule — they cannot be modified
-        through the timesheet grid.
+        Zero-out **Actual** and **Planned** hours for any grid task whose
+        name is NOT in *config_task_names*.  The config is the single
+        source of truth — only listed tasks should have filled values.
         """
         ctrl = self._get_controller_name()
-        # Collect all tasks with their Actual values
+        # Collect all tasks with their Actual and Planned values
         tasks = self.page.evaluate(f"""() => {{
             let ctrl = window['{ctrl}'];
             let grid = ctrl._jsGridControl;
@@ -817,18 +1166,23 @@ class TimesheetEditPage:
                 }}
                 if (!name) continue;  // skip summary/total rows
                 let actual = [];
+                let planned = [];
                 for (let c = 0; c < 7; c++) {{
                     try {{ actual.push(rec.GetLocalizedValue('TPD_col' + c + 'a') || ''); }}
                     catch(e) {{ actual.push(''); }}
+                    try {{ planned.push(rec.GetLocalizedValue('TPD_col' + c + 'p') || ''); }}
+                    catch(e) {{ planned.push(''); }}
                 }}
-                result.push({{ key: key, name: name, actual: actual }});
+                result.push({{ key: key, name: name, actual: actual, planned: planned }});
             }}
             return result;
         }}""")
 
         config_names_lower = [n.lower().strip() for n in config_task_names]
-        cleared_any = False
         day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        # Collect ALL property updates across all non-config tasks
+        all_updates_js_parts: list[str] = []
 
         for task in tasks:
             task_name = task["name"]
@@ -846,24 +1200,42 @@ class TimesheetEditPage:
                 if v and v not in ("", "0h", "0")
             ]
 
-            if not non_zero_actual:
+            # Find non-zero Planned values
+            non_zero_planned = [
+                (i, v) for i, v in enumerate(task["planned"])
+                if v and v not in ("", "0h", "0")
+            ]
+
+            if not non_zero_actual and not non_zero_planned:
                 continue
 
             print(f"\n🧹 Clearing non-config task: {task_name}")
 
             for col_idx, old_val in non_zero_actual:
-                self.page.evaluate(f"""() => {{
-                    window['{ctrl}'].WriteDataValueByKey(
-                        '{task["key"]}', 'TPD_col{col_idx}a', 0
-                    );
-                }}""")
-                print(f"   🗑️  {day_names[col_idx]}: \"{old_val}\" → 0h")
+                all_updates_js_parts.append(
+                    f"SP.JsGrid.CreateValidatedPropertyUpdate('{task['key']}', 'TPD_col{col_idx}a', 0, '0h')"
+                )
+                print(f"   🗑️  Actual  {day_names[col_idx]}: \"{old_val}\" → 0h")
 
-            cleared_any = True
+            for col_idx, old_val in non_zero_planned:
+                all_updates_js_parts.append(
+                    f"SP.JsGrid.CreateValidatedPropertyUpdate('{task['key']}', 'TPD_col{col_idx}p', 0, '0h')"
+                )
+                print(f"   🗑️  Planned {day_names[col_idx]}: \"{old_val}\" → 0h")
 
-        if cleared_any:
+        if all_updates_js_parts:
+            updates_array = ",\n                ".join(all_updates_js_parts)
             self.page.evaluate(f"""() => {{
-                window['{ctrl}']._jsGridControl.RefreshAllRows();
+                let ctrl = window['{ctrl}'];
+                let grid = ctrl._jsGridControl;
+                let updates = [
+                    {updates_array}
+                ];
+                let changeKey = grid.UpdateProperties(updates, null, null);
+                if (changeKey) {{
+                    ctrl.notifyWritePending(changeKey);
+                }}
+                grid.RefreshAllRows();
             }}""")
             self.page.wait_for_timeout(500)
         else:
@@ -879,12 +1251,25 @@ class TimesheetEditPage:
         period_start: date | None = None,
     ):
         """
-        Fill an entire week of hours using the config defaults.
+        Fill an entire week of hours using the project config.
 
         For each project in *projects*:
-        1. Check if its row already exists in the grid.
-        2. If not found, add it via "From Existing Assignments".
-        3. Fill the daily Actual hours (skipping public holidays).
+
+        1. Clear Actual & Planned hours from any grid task **not** in the
+           config (single source of truth).
+        2. Locate the task row in the grid (or add it via "From Existing
+           Assignments").
+        3. Fill daily Actual hours — either a fixed ``default_hours_per_day``
+           or by copying server Planned values (``use_planned: true``).
+        4. Optionally zero-out Planned values (``clear_planned: true``).
+
+        Public holidays (based on *region*) are automatically skipped.
+
+        Args:
+            projects:     List of project dicts from ``config.yaml``.
+            work_days:    Day names to fill, e.g. ``["Monday", …, "Friday"]``.
+            region:       Australian state code for holiday detection.
+            period_start: Monday of the target week (defaults to current).
         """
         if period_start is None:
             period_start = get_current_week_range()[0]
@@ -905,13 +1290,16 @@ class TimesheetEditPage:
         for project in projects:
             name = project["name"]
             use_planned = project.get("use_planned", False)
+            clear_planned = project.get("clear_planned", False)
             hours = project.get("default_hours_per_day", 0)
 
-            if not use_planned and hours <= 0:
+            if not use_planned and hours <= 0 and not clear_planned:
                 print(f"   ⏭️  Skipping {name} (0 hours, use_planned=false)")
                 continue
 
             mode = "Planned → Actual" if use_planned else f"{hours}h/day"
+            if clear_planned:
+                mode += " + clear Planned"
             print(f"\n📝 Processing: {name} ({mode})")
 
             # 1. Check if task already exists in the grid
@@ -956,19 +1344,38 @@ class TimesheetEditPage:
                     region=region,
                 )
 
+            # Clear Planned hours if configured
+            if clear_planned:
+                rec_key = self._find_record_key(name) if not use_planned else record_key
+                if rec_key:
+                    print(f"\n🧹 Clearing Planned hours for: {name}")
+                    self._clear_planned_hours(
+                        rec_key, work_days,
+                        task_name=name,
+                        period_start=period_start,
+                    )
+                else:
+                    print(f"   ⚠️  Could not find record key for {name} — skipping planned clear")
+
     # ----- Save / Submit -------------------------------------------------
 
-    def save(self):
-        """Click the Save button in the TIMESHEET ribbon."""
-        # Check if there are unsaved changes
-        try:
-            ctrl = self._get_controller_name()
-            is_dirty = self.page.evaluate(f"() => window['{ctrl}'].IsDirty()")
-            if not is_dirty:
-                print("💾 No unsaved changes — skipping save")
-                return
-        except Exception:
-            pass  # proceed with save anyway
+    def save(self, force: bool = False):
+        """Click the Save button in the TIMESHEET ribbon.
+
+        Args:
+            force: Always click Save even if IsDirty() returns False.
+                   Useful after JS API writes which may not set the
+                   dirty flag.
+        """
+        if not force:
+            try:
+                ctrl = self._get_controller_name()
+                is_dirty = self.page.evaluate(f"() => window['{ctrl}'].IsDirty()")
+                if not is_dirty:
+                    print("💾 No unsaved changes — skipping save")
+                    return
+            except Exception:
+                pass  # proceed with save anyway
 
         save_btn = self.page.locator(
             f"a[id='{self._SAVE_BTN_ID}']"
@@ -978,6 +1385,10 @@ class TimesheetEditPage:
             self._activate_timesheet_tab()
         save_btn.click()
         self.page.wait_for_load_state("load")
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
         self.page.wait_for_timeout(3000)
 
         # Verify save completed — retry if still dirty
@@ -1008,16 +1419,120 @@ class TimesheetEditPage:
             print("💾 Timesheet saved (could not verify)")
 
     def submit(self):
-        """Click the Send / Submit button in the TIMESHEET ribbon."""
-        submit_btn = self.page.locator("a[id*='Submit'], a[id*='Send']").first
-        if not submit_btn.is_visible():
-            self._activate_timesheet_tab()
-        submit_btn.click()
+        """
+        Submit the timesheet via:
+        TIMESHEET tab → Send → Turn in Final Timesheet → OK.
+        """
+        # 1. Activate the TIMESHEET ribbon tab
+        self._activate_timesheet_tab()
+        self.page.wait_for_timeout(500)
+
+        # 2. Click the "Send" menu button (known ribbon ID)
+        send_btn_id = "Ribbon.ContextualTabs.TiedMode.Home.Sheet.SubmitMenu-Large"
+        send_btn = self.page.locator(f"a[id='{send_btn_id}']")
+        if not send_btn.is_visible():
+            send_btn = self.page.locator("a[id*='SubmitMenu']").first
+        print("   📤 Clicking Send...")
+        send_btn.click()
+        self.page.wait_for_timeout(1500)
+
+        # 3. Click "Turn in Final Timesheet" from the dropdown menu
+        print("   📤 Clicking 'Turn in Final Timesheet'...")
+        # The menu item span has class ms-cui-ctl-mediumlabel; the clickable
+        # element is the nearest ancestor <a> with class ms-cui-ctl.
+        turn_in = self.page.locator(
+            "a.ms-cui-ctl:has(span:has-text('Turn in Final Timesheet'))"
+        ).first
         try:
-            self.page.locator(
-                "input[value='OK'], button:has-text('OK')"
-            ).first.click(timeout=3000)
+            turn_in.wait_for(state="visible", timeout=3000)
+            turn_in.click()
         except Exception:
-            pass
+            # Fallback: click the span directly
+            try:
+                span = self.page.locator(
+                    "span:has-text('Turn in Final Timesheet')"
+                ).first
+                span.click(timeout=5000)
+            except Exception:
+                # Last resort: try re-clicking Send and then the menu item
+                print("   ⚠️  Menu item not found, retrying Send...")
+                send_btn.click()
+                self.page.wait_for_timeout(2000)
+                self.page.locator(
+                    "a.ms-cui-ctl:has(span:has-text('Turn in Final Timesheet')), "
+                    "span:has-text('Turn in Final Timesheet')"
+                ).first.click(timeout=5000)
+
+        # Wait for the dialog iframe to appear
+        self.page.wait_for_timeout(3000)
+
+        # 4. Click OK in the confirmation dialog (SharePoint modal iframe)
+        print("   📤 Confirming submission...")
+        ok_clicked = False
+
+        # Wait and retry — the dialog iframe may take a moment to load
+        for attempt in range(6):
+            frames = self.page.frames
+            if attempt == 0:
+                print(f"   🔍 Found {len(frames)} frame(s):")
+                for f in frames:
+                    print(f"      - name=\"{f.name}\" url=\"{f.url[:80]}\"")
+
+            # Try matching the SubmitTSDlg iframe specifically
+            for frame in frames:
+                if "SubmitTSDlg" in frame.url or "DlgFrame" in frame.name:
+                    try:
+                        ok_btn = frame.locator("input[value='OK']").first
+                        ok_btn.wait_for(state="visible", timeout=3000)
+                        ok_btn.click()
+                        ok_clicked = True
+                        print(f"   ✅ Clicked OK in frame: {frame.name}")
+                        break
+                    except Exception:
+                        continue
+            if ok_clicked:
+                break
+
+            # Fallback: try any frame with a visible OK input
+            for frame in frames:
+                try:
+                    ok_btn = frame.locator("input[value='OK']").first
+                    if ok_btn.is_visible():
+                        ok_btn.click()
+                        ok_clicked = True
+                        print(f"   ✅ Clicked OK in frame (fallback): {frame.name}")
+                        break
+                except Exception:
+                    continue
+            if ok_clicked:
+                break
+
+            # Also try the ms-dlgContent overlay approach — click OK via JS
+            try:
+                ok_found = self.page.evaluate("""() => {
+                    // Search all iframes for OK button
+                    let iframes = document.querySelectorAll('iframe');
+                    for (let iframe of iframes) {
+                        try {
+                            let doc = iframe.contentDocument || iframe.contentWindow.document;
+                            let btn = doc.querySelector("input[value='OK']");
+                            if (btn) { btn.click(); return true; }
+                        } catch(e) {}
+                    }
+                    return false;
+                }""")
+                if ok_found:
+                    ok_clicked = True
+                    print("   ✅ Clicked OK via JS iframe traversal")
+                    break
+            except Exception:
+                pass
+
+            self.page.wait_for_timeout(1000)
+
+        if not ok_clicked:
+            print("   ⚠️  Could not find OK button in dialog")
+
         self.page.wait_for_load_state("load")
+        self.page.wait_for_timeout(3000)
         print("🚀 Timesheet submitted")

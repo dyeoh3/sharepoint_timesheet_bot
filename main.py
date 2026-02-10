@@ -8,7 +8,7 @@ from bot.runner import run_timesheet_bot
 
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(version="0.4.0")
 def cli():
     """SharePoint Timesheet Bot — automate your weekly timesheet."""
     pass
@@ -36,7 +36,7 @@ def login():
         summary = TimesheetSummaryPage(page)
         summary.navigate()
         bm.wait_for_manual_login(page)
-        print("💾 Auth state saved to:", bm.state_file)
+        print("💾 Auth state saved to:", bm.user_data_dir)
         print("   Future runs will skip login automatically.")
         input("Press Enter to close the browser...")
 

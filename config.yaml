@@ -17,16 +17,17 @@ defaults:
 # Options per project:
 #   default_hours_per_day: <N>    — fill a fixed N hours every work day
 #   use_planned: true             — copy the server's Planned hours as Actual
+#   clear_planned: true           — zero-out Planned hours for this task
 # If neither is set, the task is included but gets 0 hours.
 # Tasks NOT listed here will have their Actual hours cleared.
 projects:
   - name: "ST-333 Marketplace 2.0"
-    use_planned: true
+    default_hours_per_day: 8
+    clear_planned: true
 
 # Browser settings
 browser:
   type: "chromium"          # chromium, firefox, webkit
   slow_mo: 100              # ms delay between actions (helps with SharePoint loading)
   timeout: 60000            # ms timeout for page loads
-  state_file: "browser_state/state.json"  # legacy (no longer used)
   user_data_dir: "browser_state/profile"  # persistent browser profile for SSO
