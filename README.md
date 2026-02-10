@@ -4,19 +4,46 @@ Automates filling out weekly timesheets on SharePoint PWA using Python + Playwri
 
 ## Setup
 
+### Option 1: Virtual Environment (Recommended)
+
 ```bash
 # 1. Create & activate a virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Install Playwright browsers (uses your installed Chrome)
+# 3. Install Playwright browsers
 playwright install chromium
 
 # 4. Copy .env.example → .env and fill in your SharePoint URLs
 cp .env.example .env
+```
+
+When using a virtual environment, run scripts with `python` directly:
+```bash
+python scripts/test_open_site.py
+python main.py login
+```
+
+### Option 2: System Python
+
+```bash
+# 1. Install dependencies globally
+pip3 install -r requirements.txt
+
+# 2. Install Playwright browsers
+playwright install chromium
+
+# 3. Copy .env.example → .env and fill in your SharePoint URLs
+cp .env.example .env
+```
+
+When using system Python without a virtual environment, use `python3`:
+```bash
+python3 scripts/test_open_site.py
+python3 main.py login
 ```
 
 ## Configuration
@@ -25,6 +52,8 @@ cp .env.example .env
 - **`config.yaml`** — Projects, default hour allocations, and browser settings.
 
 ## Usage
+
+**Note:** Use `python` if you activated a virtual environment, or `python3` for system Python.
 
 ```bash
 # Smoke test — opens the site, handles login, checks page elements
