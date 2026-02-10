@@ -1,0 +1,34 @@
+# SharePoint Timesheet Bot Configuration
+
+sharepoint:
+  base_url: "https://lionco.sharepoint.com"
+  timesheet_url: "https://lionco.sharepoint.com/sites/ITProjects/_layouts/15/pwa/Timesheet/MyTSSummary.aspx"
+
+# Default weekly hours template
+# Adjust project names and hours to match your typical week
+defaults:
+  total_hours_per_day: 8
+  work_days:
+    - Monday
+    - Tuesday
+    - Wednesday
+    - Thursday
+    - Friday
+
+# Define your projects and default hour allocations
+projects:
+  - name: "IT Projects - General"
+    default_hours_per_day: 4
+  - name: "IT Projects - Support"
+    default_hours_per_day: 2
+  - name: "IT Projects - Meetings"
+    default_hours_per_day: 1
+  - name: "IT Projects - Admin"
+    default_hours_per_day: 1
+
+# Browser settings
+browser:
+  type: "chromium"          # chromium, firefox, webkit
+  slow_mo: 100              # ms delay between actions (helps with SharePoint loading)
+  timeout: 60000            # ms timeout for page loads
+  state_file: "browser_state/state.json"  # persistent auth state
