@@ -13,18 +13,19 @@ from datetime import date, timedelta
 
 from playwright.sync_api import Page
 
+from bot.config import get_sharepoint_urls
+
 
 class TimesheetSummaryPage:
     """Interactions with MyTSSummary.aspx — the timesheet list page."""
 
-    URL = "https://lionco.sharepoint.com/sites/ITProjects/_layouts/15/pwa/Timesheet/MyTSSummary.aspx"
-
     def __init__(self, page: Page):
         self.page = page
+        _, self.url = get_sharepoint_urls()
 
     def navigate(self):
         """Go to the timesheet summary page."""
-        self.page.goto(self.URL, wait_until="networkidle")
+        self.page.goto(self.url, wait_until="networkidle")
 
     def get_current_period_status(self) -> str | None:
         """Read the status of the current timesheet period (e.g., 'Not Created', 'In Progress')."""

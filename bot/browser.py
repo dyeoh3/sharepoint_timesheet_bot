@@ -6,7 +6,7 @@ from pathlib import Path
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
-from bot.config import get_credentials, is_headless, load_config
+from bot.config import get_credentials, get_sharepoint_urls, is_headless, load_config
 
 
 class BrowserManager:
@@ -91,7 +91,8 @@ class BrowserManager:
             pass  # prompt may not appear
 
         # Wait for SharePoint to load
-        page.wait_for_url("**/sharepoint.com/**", timeout=30000)
+        base_url, _ = get_sharepoint_urls()
+        page.wait_for_url(f"**{base_url}/**", timeout=30000)
 
     # -- Context manager --------------------------------------------------
 

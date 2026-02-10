@@ -1,8 +1,5 @@
 # SharePoint Timesheet Bot Configuration
-
-sharepoint:
-  base_url: "https://lionco.sharepoint.com"
-  timesheet_url: "https://lionco.sharepoint.com/sites/ITProjects/_layouts/15/pwa/Timesheet/MyTSSummary.aspx"
+# NOTE: SharePoint URLs are loaded from .env (SHAREPOINT_BASE_URL, SHAREPOINT_TIMESHEET_URL)
 
 # Default weekly hours template
 # Adjust project names and hours to match your typical week

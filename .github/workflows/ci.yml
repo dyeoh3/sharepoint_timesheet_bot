@@ -1,0 +1,113 @@
+# GitHub Actions workflow for Python-native semantic versioning and automated merging on PR approval
+# Uses Commitizen to bump version in pyproject.toml, tag, and create GitHub releases.
+
+name: CI & Python Semantic Versioning
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch all tags
+        run: |
+          git fetch --tags --force
+          echo "Latest tag: $(git describe --tags --abbrev=0 2>/dev/null || echo 'none')"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Commitizen
+        run: |
+          python -m pip install --upgrade pip
+          pip install commitizen
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Sync version with latest tag
+        run: |
+          # Ensure pyproject.toml version matches the latest tag
+          # This prevents failures when a merge overwrites the CI's bump commit
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            CURRENT_VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+            echo "Latest tag: $LATEST_TAG, pyproject.toml version: $CURRENT_VERSION"
+            if [ "$LATEST_TAG" != "$CURRENT_VERSION" ]; then
+              echo "⚠ Version mismatch detected! Updating pyproject.toml from $CURRENT_VERSION to $LATEST_TAG"
+              sed -i "s/^version = \"$CURRENT_VERSION\"/version = \"$LATEST_TAG\"/" pyproject.toml
+              git add pyproject.toml
+              git commit -m "fix(version): sync pyproject.toml to $LATEST_TAG" --no-verify || true
+            fi
+          fi
+
+      - name: Bump version with Commitizen
+        id: bump
+        run: |
+          # Get the last tag to check commits since then
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            echo "Checking commits since $LAST_TAG"
+            git log --oneline $LAST_TAG..HEAD
+          else
+            echo "No tags found - this may cause issues"
+            git log --oneline -10
+          fi
+
+          # Run bump and capture exit code
+          if cz bump --yes; then
+            echo "bump_success=true" >> $GITHUB_OUTPUT
+            echo "version=$(cz version -p)" >> $GITHUB_OUTPUT
+          else
+            echo "bump_success=false" >> $GITHUB_OUTPUT
+            echo "Commitizen bump failed or found nothing to bump"
+          fi
+
+      - name: Generate full changelog
+        if: steps.bump.outputs.bump_success == 'true'
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          echo "Regenerating full changelog for $VERSION"
+
+          # Regenerate the entire changelog from tag history (overwrites the file)
+          cz changelog --file-name CHANGELOG.md
+
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): update for $VERSION" --no-verify
+          # Move the tag to include the changelog commit
+          git tag -f "$VERSION"
+
+      - name: Push changes and tags
+        if: steps.bump.outputs.bump_success == 'true'
+        run: |
+          # Pull latest to avoid push rejection if main was updated during CI run
+          git pull --rebase origin main || true
+          git push origin main
+          git push origin --tags
+
+      - name: Create GitHub Release
+        if: steps.bump.outputs.bump_success == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --notes-file CHANGELOG.md \
+            --latest

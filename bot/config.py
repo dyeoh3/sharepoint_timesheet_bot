@@ -32,6 +32,18 @@ def get_credentials() -> tuple[str, str]:
     return email, password
 
 
+def get_sharepoint_urls() -> tuple[str, str]:
+    """Return (base_url, timesheet_url) from environment variables."""
+    base_url = os.getenv("SHAREPOINT_BASE_URL")
+    timesheet_url = os.getenv("SHAREPOINT_TIMESHEET_URL")
+    if not base_url or not timesheet_url:
+        raise EnvironmentError(
+            "SHAREPOINT_BASE_URL and SHAREPOINT_TIMESHEET_URL must be set in .env file. "
+            "Copy .env.example to .env and fill in your URLs."
+        )
+    return base_url, timesheet_url
+
+
 def is_headless() -> bool:
     """Check if the browser should run headless."""
     return os.getenv("HEADLESS", "false").lower() == "true"
