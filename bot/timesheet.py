@@ -659,12 +659,16 @@ class TimesheetEditPage:
 
     def _clear_non_config_tasks(self, config_task_names: list[str]):
         """
-        Zero-out Actual **and** Planned hours for any grid task whose
-        name is NOT in *config_task_names*.  The config is the single
-        source of truth — only listed tasks should have values.
+        Zero-out **Actual** hours for any grid task whose name is NOT in
+        *config_task_names*.  The config is the single source of truth —
+        only listed tasks should have filled Actual values.
+
+        Note: Planned values (``TPD_col{N}p``) are read-only and come
+        from the server-side project schedule — they cannot be modified
+        through the timesheet grid.
         """
         ctrl = self._get_controller_name()
-        # Collect all tasks with their Actual ('a') and Planned ('p') values
+        # Collect all tasks with their Actual values
         tasks = self.page.evaluate(f"""() => {{
             let ctrl = window['{ctrl}'];
             let grid = ctrl._jsGridControl;
@@ -683,14 +687,11 @@ class TimesheetEditPage:
                 }}
                 if (!name) continue;  // skip summary/total rows
                 let actual = [];
-                let planned = [];
                 for (let c = 0; c < 7; c++) {{
                     try {{ actual.push(rec.GetLocalizedValue('TPD_col' + c + 'a') || ''); }}
                     catch(e) {{ actual.push(''); }}
-                    try {{ planned.push(rec.GetLocalizedValue('TPD_col' + c + 'p') || ''); }}
-                    catch(e) {{ planned.push(''); }}
                 }}
-                result.push({{ key: key, name: name, actual: actual, planned: planned }});
+                result.push({{ key: key, name: name, actual: actual }});
             }}
             return result;
         }}""")
@@ -714,13 +715,8 @@ class TimesheetEditPage:
                 (i, v) for i, v in enumerate(task["actual"])
                 if v and v not in ("", "0h", "0")
             ]
-            # Find non-zero Planned values
-            non_zero_planned = [
-                (i, v) for i, v in enumerate(task["planned"])
-                if v and v not in ("", "0h", "0")
-            ]
 
-            if not non_zero_actual and not non_zero_planned:
+            if not non_zero_actual:
                 continue
 
             print(f"\n🧹 Clearing non-config task: {task_name}")
@@ -731,15 +727,7 @@ class TimesheetEditPage:
                         '{task["key"]}', 'TPD_col{col_idx}a', 0
                     );
                 }}""")
-                print(f"   🗑️  {day_names[col_idx]} Actual: \"{old_val}\" → 0h")
-
-            for col_idx, old_val in non_zero_planned:
-                self.page.evaluate(f"""() => {{
-                    window['{ctrl}'].WriteDataValueByKey(
-                        '{task["key"]}', 'TPD_col{col_idx}p', 0
-                    );
-                }}""")
-                print(f"   🗑️  {day_names[col_idx]} Planned: \"{old_val}\" → 0h")
+                print(f"   🗑️  {day_names[col_idx]}: \"{old_val}\" → 0h")
 
             cleared_any = True
 
