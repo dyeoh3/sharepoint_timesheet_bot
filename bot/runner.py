@@ -51,6 +51,10 @@ def run_timesheet_bot(
         editor = TimesheetEditPage(page)
         projects = config.get("projects", [])
         work_days = config.get("defaults", {}).get("work_days", [])
+
+        # Give the edit page time to fully render the grid
+        page.wait_for_timeout(2000)
+
         editor.fill_week_from_config(projects, work_days)
         print("✅ Hours filled")
 

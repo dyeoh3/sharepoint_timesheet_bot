@@ -14,14 +14,8 @@ defaults:
 
 # Define your projects and default hour allocations
 projects:
-  - name: "IT Projects - General"
-    default_hours_per_day: 4
-  - name: "IT Projects - Support"
-    default_hours_per_day: 2
-  - name: "IT Projects - Meetings"
-    default_hours_per_day: 1
-  - name: "IT Projects - Admin"
-    default_hours_per_day: 1
+  - name: "ST-333 Marketplace 2.0"
+    default_hours_per_day: 8
 
 # Browser settings
 browser:
