@@ -21,10 +21,16 @@ playwright install chromium
 cp .env.example .env
 ```
 
-When using a virtual environment, run scripts with `python` directly:
+**With venv activated** (after running `source .venv/bin/activate`):
 ```bash
 python scripts/test_open_site.py
 python main.py login
+```
+
+**Without activating** (direct path to venv Python):
+```bash
+.venv/bin/python scripts/test_open_site.py
+.venv/bin/python main.py login
 ```
 
 ### Option 2: System Python
@@ -53,7 +59,10 @@ python3 main.py login
 
 ## Usage
 
-**Note:** Use `python` if you activated a virtual environment, or `python3` for system Python.
+**Note:** Commands below assume:
+- Virtual environment is **activated** (`source .venv/bin/activate`) → use `python`
+- OR using system Python → use `python3`
+- OR venv not activated → use `.venv/bin/python`
 
 ```bash
 # Smoke test — opens the site, handles login, checks page elements
