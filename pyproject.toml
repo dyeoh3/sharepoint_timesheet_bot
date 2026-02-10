@@ -35,6 +35,7 @@ name = "cz_conventional_commits"
 version = "0.3.1"
 version_files = [
     "pyproject.toml:^version",
+    "main.py:version=",
 ]
 tag_format = "$version"
 update_changelog_on_bump = false
