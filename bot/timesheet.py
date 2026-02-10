@@ -655,6 +655,136 @@ class TimesheetEditPage:
         else:
             print(f"   ✅ Verified: all {len(day_indices)} day cells read back \"{expected}\"")
 
+    def _fill_from_planned(
+        self,
+        record_key: str,
+        planned: dict[int, str],
+        work_days: list[str],
+        task_name: str = "",
+        period_start: date | None = None,
+        region: str = "NSW",
+    ):
+        """
+        Copy Planned values as Actual for each work day.
+
+        *planned* is a dict mapping day index → localized value string
+        (from ``_read_planned_values``).  Days not in *planned* or that
+        fall on a public holiday are cleared to 0.
+        """
+        if period_start is None:
+            period_start = get_current_week_range()[0]
+
+        period_end = period_start + timedelta(days=6)
+        holiday_dates = get_holidays_in_range(period_start, period_end, state=region)
+
+        day_index_map = {
+            "Monday": 0, "Tuesday": 1, "Wednesday": 2,
+            "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6,
+        }
+        target_indices = sorted(day_index_map[d] for d in work_days if d in day_index_map)
+
+        ctrl = self._get_controller_name()
+        filled = 0
+        cleared = 0
+        skipped_holiday = 0
+
+        for day_idx in target_indices:
+            field_key = f"TPD_col{day_idx}a"
+            day_date = period_start + timedelta(days=day_idx)
+
+            # Holiday check
+            if day_date in holiday_dates:
+                hol_name = holiday_dates[day_date]
+                print(f"   🏖️  {day_date.strftime('%A %d/%m')} is \"{hol_name}\" — skipping")
+                skipped_holiday += 1
+                # Clear any existing Actual on this holiday
+                current = self.page.evaluate(f"""() => {{
+                    let grid = window['{ctrl}']._jsGridControl;
+                    let rec = grid.GetRecord('{record_key}');
+                    if (!rec) return null;
+                    try {{ return rec.GetLocalizedValue('{field_key}'); }}
+                    catch(e) {{ return null; }}
+                }}""")
+                if current and current not in ("", "0h", "0", None):
+                    self.page.evaluate(f"""() => {{
+                        window['{ctrl}'].WriteDataValueByKey(
+                            '{record_key}', '{field_key}', 0
+                        );
+                    }}""")
+                    cleared += 1
+                    print(f"       ↳ Cleared existing \"{current}\" → 0h")
+                continue
+
+            # Get the planned value for this day
+            planned_val = planned.get(day_idx)
+            if not planned_val:
+                continue
+
+            # Read current Actual
+            current = self.page.evaluate(f"""() => {{
+                let grid = window['{ctrl}']._jsGridControl;
+                let rec = grid.GetRecord('{record_key}');
+                if (!rec) return null;
+                try {{ return rec.GetLocalizedValue('{field_key}'); }}
+                catch(e) {{ return null; }}
+            }}""")
+
+            if current == planned_val:
+                filled += 1
+                continue
+
+            if current and current not in ("", "0h", "0", None):
+                print(f"   🔄 {day_date.strftime('%A')}: overwriting \"{current}\" → \"{planned_val}\"")
+            else:
+                print(f"   📋 {day_date.strftime('%A')}: Planned → Actual \"{planned_val}\"")
+
+            self.page.evaluate(f"""() => {{
+                window['{ctrl}'].WriteLocalizedValueByKey(
+                    '{record_key}', '{field_key}', '{planned_val}'
+                );
+            }}""")
+            filled += 1
+
+        if filled > 0 or cleared > 0:
+            self.page.evaluate(f"""() => {{
+                window['{ctrl}']._jsGridControl.RefreshAllRows();
+            }}""")
+            self.page.wait_for_timeout(500)
+
+        total_workdays = len(target_indices) - skipped_holiday
+        parts = [f"✅ Filled Planned→Actual in {filled}/{total_workdays} day cells"]
+        if skipped_holiday:
+            parts.append(f"{skipped_holiday} holiday(s) skipped")
+        if cleared:
+            parts.append(f"{cleared} cleared")
+        print(f"   {', '.join(parts)}")
+
+    # ----- Read Planned values -----------------------------------------
+
+    def _read_planned_values(self, record_key: str) -> dict[int, str]:
+        """
+        Read the server-side Planned values (``TPD_col{N}p``) for a record.
+
+        Returns a dict mapping day index (0–6) to the localized value
+        string (e.g. ``'8.24h'``).  Days with no Planned value are
+        omitted from the dict.
+        """
+        ctrl = self._get_controller_name()
+        raw = self.page.evaluate(f"""() => {{
+            let grid = window['{ctrl}']._jsGridControl;
+            let rec = grid.GetRecord('{record_key}');
+            if (!rec) return {{}};
+            let result = {{}};
+            for (let c = 0; c < 7; c++) {{
+                try {{
+                    let v = rec.GetLocalizedValue('TPD_col' + c + 'p');
+                    if (v && v !== '0h' && v !== '0') result[c] = v;
+                }} catch(e) {{}}
+            }}
+            return result;
+        }}""")
+        return {int(k): v for k, v in raw.items()} if raw else {}
+
     # ----- Clear tasks not in config ------------------------------------
 
     def _clear_non_config_tasks(self, config_task_names: list[str]):
@@ -774,12 +904,15 @@ class TimesheetEditPage:
 
         for project in projects:
             name = project["name"]
+            use_planned = project.get("use_planned", False)
             hours = project.get("default_hours_per_day", 0)
-            if hours <= 0:
-                print(f"   ⏭️  Skipping {name} (0 hours)")
+
+            if not use_planned and hours <= 0:
+                print(f"   ⏭️  Skipping {name} (0 hours, use_planned=false)")
                 continue
 
-            print(f"\n📝 Processing: {name} ({hours}h/day)")
+            mode = "Planned → Actual" if use_planned else f"{hours}h/day"
+            print(f"\n📝 Processing: {name} ({mode})")
 
             # 1. Check if task already exists in the grid
             left_index = self.find_task_row_index(name)
@@ -795,12 +928,33 @@ class TimesheetEditPage:
                     continue
 
             # 3. Fill hours in the Actual row
-            self.fill_hours_for_task(
-                left_index, hours, work_days,
-                task_name=name,
-                period_start=period_start,
-                region=region,
-            )
+            if use_planned:
+                record_key = self._find_record_key(name)
+                if record_key is None:
+                    print(f"   ❌ Could not resolve record key for \"{name}\"")
+                    continue
+                planned = self._read_planned_values(record_key)
+                if not planned:
+                    print(f"   ⚠️  No Planned values found — nothing to copy")
+                    continue
+                planned_summary = ", ".join(
+                    f"{['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][k]}={v}"
+                    for k, v in sorted(planned.items())
+                )
+                print(f"   📋 Planned: {planned_summary}")
+                self._fill_from_planned(
+                    record_key, planned, work_days,
+                    task_name=name,
+                    period_start=period_start,
+                    region=region,
+                )
+            else:
+                self.fill_hours_for_task(
+                    left_index, hours, work_days,
+                    task_name=name,
+                    period_start=period_start,
+                    region=region,
+                )
 
     # ----- Save / Submit -------------------------------------------------
 

@@ -39,7 +39,10 @@ def test_fill_timesheet(dry_run: bool = False):
 
     print("📋 Projects to fill:")
     for p in projects:
-        print(f"   • {p['name']}: {p.get('default_hours_per_day', 0)}h/day")
+        if p.get("use_planned"):
+            print(f"   • {p['name']}: use Planned hours")
+        else:
+            print(f"   • {p['name']}: {p.get('default_hours_per_day', 0)}h/day")
     print(f"📅 Work days: {', '.join(work_days)}")
     print(f"🌏 Region: {region}\n")
 
