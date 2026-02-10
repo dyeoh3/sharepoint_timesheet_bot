@@ -1,3 +1,9 @@
+## 0.4.0 (2026-02-10)
+
+### Feat
+
+- add macOS LaunchAgent for scheduled Friday 9 AM runs\n\n- Add wrapper script (scripts/run_timesheet.sh) for unattended runs\n- Add LaunchAgent plist (com.darren.timesheet-bot.plist)\n- Add install/uninstall shell scripts\n- Add CLI commands: schedule install/uninstall/status/logs/run\n- Add logs/.gitkeep for timestamped run logs\n- Update README with scheduling documentation" (#3)
+
 ## 0.3.2 (2026-02-10)
 
 ### Fix
