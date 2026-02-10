@@ -446,7 +446,7 @@ class TimesheetEditPage:
     def _find_record_key(self, task_name: str) -> str | None:
         """
         Find the JSGrid record key for a task by matching against
-        ``TS_LINE_TASK_HIERARCHY`` or the cached assignment/project name.
+        the cached assignment name (``TS_LINE_CACHED_ASSIGN_NAME``).
         """
         ctrl = self._get_controller_name()
         target = task_name.lower().strip()
@@ -461,13 +461,7 @@ class TimesheetEditPage:
                 let rec = grid.GetRecord(key);
                 if (!rec) continue;
 
-                // Check hierarchy field
-                let hier = (rec.fieldRawDataMap?.['TS_LINE_TASK_HIERARCHY'] || '').toLowerCase();
-                if (hier && target.includes(hier.split(' ').pop()) && hier.length > 0) {{
-                    // Not reliable enough — fall through to property check
-                }}
-
-                // Check cached assignment name (most reliable)
+                // Match on cached assignment name (most reliable)
                 let assignProp = rec.properties?.['TS_LINE_CACHED_ASSIGN_NAME'];
                 if (assignProp) {{
                     for (let k in assignProp) {{
@@ -476,11 +470,6 @@ class TimesheetEditPage:
                             return key;
                         }}
                     }}
-                }}
-
-                // Check hierarchy contains target
-                if (hier.includes(target) || target.includes(hier)) {{
-                    return key;
                 }}
             }}
             return null;
@@ -584,8 +573,8 @@ class TimesheetEditPage:
                 }}""")
                 if current and current not in ("", "0h", "0", None):
                     self.page.evaluate(f"""() => {{
-                        window['{ctrl}'].WriteLocalizedValueByKey(
-                            '{record_key}', '{field_key}', '0h'
+                        window['{ctrl}'].WriteDataValueByKey(
+                            '{record_key}', '{field_key}', 0
                         );
                     }}""")
                     cleared += 1
@@ -666,6 +655,102 @@ class TimesheetEditPage:
         else:
             print(f"   ✅ Verified: all {len(day_indices)} day cells read back \"{expected}\"")
 
+    # ----- Clear tasks not in config ------------------------------------
+
+    def _clear_non_config_tasks(self, config_task_names: list[str]):
+        """
+        Zero-out Actual **and** Planned hours for any grid task whose
+        name is NOT in *config_task_names*.  The config is the single
+        source of truth — only listed tasks should have values.
+        """
+        ctrl = self._get_controller_name()
+        # Collect all tasks with their Actual ('a') and Planned ('p') values
+        tasks = self.page.evaluate(f"""() => {{
+            let ctrl = window['{ctrl}'];
+            let grid = ctrl._jsGridControl;
+            let count = grid.GetViewRecordCount();
+            let result = [];
+            for (let i = 0; i < count; i++) {{
+                let key = grid.GetRecordKeyByViewIndex(i);
+                let rec = grid.GetRecord(key);
+                if (!rec) continue;
+                let name = '';
+                let assignProp = rec.properties?.['TS_LINE_CACHED_ASSIGN_NAME'];
+                if (assignProp) {{
+                    for (let k in assignProp) {{
+                        if (typeof assignProp[k] === 'string') {{ name = assignProp[k]; break; }}
+                    }}
+                }}
+                if (!name) continue;  // skip summary/total rows
+                let actual = [];
+                let planned = [];
+                for (let c = 0; c < 7; c++) {{
+                    try {{ actual.push(rec.GetLocalizedValue('TPD_col' + c + 'a') || ''); }}
+                    catch(e) {{ actual.push(''); }}
+                    try {{ planned.push(rec.GetLocalizedValue('TPD_col' + c + 'p') || ''); }}
+                    catch(e) {{ planned.push(''); }}
+                }}
+                result.push({{ key: key, name: name, actual: actual, planned: planned }});
+            }}
+            return result;
+        }}""")
+
+        config_names_lower = [n.lower().strip() for n in config_task_names]
+        cleared_any = False
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        for task in tasks:
+            task_name = task["name"]
+            task_lower = task_name.lower()
+            is_configured = any(
+                cfg in task_lower or task_lower in cfg
+                for cfg in config_names_lower
+            )
+            if is_configured:
+                continue
+
+            # Find non-zero Actual values
+            non_zero_actual = [
+                (i, v) for i, v in enumerate(task["actual"])
+                if v and v not in ("", "0h", "0")
+            ]
+            # Find non-zero Planned values
+            non_zero_planned = [
+                (i, v) for i, v in enumerate(task["planned"])
+                if v and v not in ("", "0h", "0")
+            ]
+
+            if not non_zero_actual and not non_zero_planned:
+                continue
+
+            print(f"\n🧹 Clearing non-config task: {task_name}")
+
+            for col_idx, old_val in non_zero_actual:
+                self.page.evaluate(f"""() => {{
+                    window['{ctrl}'].WriteDataValueByKey(
+                        '{task["key"]}', 'TPD_col{col_idx}a', 0
+                    );
+                }}""")
+                print(f"   🗑️  {day_names[col_idx]} Actual: \"{old_val}\" → 0h")
+
+            for col_idx, old_val in non_zero_planned:
+                self.page.evaluate(f"""() => {{
+                    window['{ctrl}'].WriteDataValueByKey(
+                        '{task["key"]}', 'TPD_col{col_idx}p', 0
+                    );
+                }}""")
+                print(f"   🗑️  {day_names[col_idx]} Planned: \"{old_val}\" → 0h")
+
+            cleared_any = True
+
+        if cleared_any:
+            self.page.evaluate(f"""() => {{
+                window['{ctrl}']._jsGridControl.RefreshAllRows();
+            }}""")
+            self.page.wait_for_timeout(500)
+        else:
+            print("\n✅ No non-config tasks to clear")
+
     # ----- High-level fill from config -----------------------------------
 
     def fill_week_from_config(
@@ -694,6 +779,10 @@ class TimesheetEditPage:
             print(f"\n📅 Public holidays this week ({region}):")
             for d, name in sorted(hols.items()):
                 print(f"   🏖️  {d.strftime('%A %d/%m/%Y')}: {name}")
+
+        # Clear hours from any tasks NOT in the config
+        config_task_names = [p["name"] for p in projects]
+        self._clear_non_config_tasks(config_task_names)
 
         for project in projects:
             name = project["name"]
@@ -747,18 +836,34 @@ class TimesheetEditPage:
             self._activate_timesheet_tab()
         save_btn.click()
         self.page.wait_for_load_state("load")
-        self.page.wait_for_timeout(2000)
+        self.page.wait_for_timeout(3000)
 
-        # Verify save completed (dirty flag should be cleared)
+        # Verify save completed — retry if still dirty
+        ctrl = self._get_controller_name()
+        for attempt in range(3):
+            try:
+                is_dirty = self.page.evaluate(f"() => window['{ctrl}'].IsDirty()")
+                if not is_dirty:
+                    print("💾 Timesheet saved successfully")
+                    return
+            except Exception:
+                pass
+            if attempt < 2:
+                self.page.wait_for_timeout(2000)
+
+        # Still dirty after retries — try clicking save again
+        print("   ⏳ Still dirty, retrying save...")
         try:
-            ctrl = self._get_controller_name()
+            save_btn.click()
+            self.page.wait_for_load_state("load")
+            self.page.wait_for_timeout(4000)
             is_dirty = self.page.evaluate(f"() => window['{ctrl}'].IsDirty()")
-            if is_dirty:
-                print("⚠️  Timesheet may not have saved (still dirty)")
+            if not is_dirty:
+                print("💾 Timesheet saved successfully (on retry)")
             else:
-                print("💾 Timesheet saved successfully")
+                print("⚠️  Timesheet may not have saved (still dirty after retry)")
         except Exception:
-            print("💾 Timesheet saved")
+            print("💾 Timesheet saved (could not verify)")
 
     def submit(self):
         """Click the Send / Submit button in the TIMESHEET ribbon."""
