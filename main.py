@@ -4,6 +4,7 @@ CLI entry point for the SharePoint Timesheet Bot.
 
 import os
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -33,9 +34,13 @@ def cli():
 @click.option("--config", "-c", default=None, help="Path to config.yaml")
 @click.option("--dry-run", is_flag=True, help="Fill hours but don't save (browser stays open)")
 @click.option("--submit", is_flag=True, help="Submit timesheet after saving")
-def fill(config, dry_run, submit):
+@click.option("--week", default=None, help="Target week as DD/MM/YYYY (Monday of the week)")
+def fill(config, dry_run, submit, week):
     """Fill out the current week's timesheet from config defaults."""
-    run_timesheet_bot(config_path=config, dry_run=dry_run, submit=submit)
+    target_monday = None
+    if week:
+        target_monday = datetime.strptime(week, "%d/%m/%Y").date()
+    run_timesheet_bot(config_path=config, dry_run=dry_run, submit=submit, target_monday=target_monday)
 
 
 @cli.command()

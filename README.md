@@ -161,6 +161,8 @@ Add `--no-close` to any command to keep the browser window open for inspection:
 .venv/bin/python main.py fill       # Fill current week and save
 .venv/bin/python main.py fill --dry-run
 .venv/bin/python main.py fill --submit
+.venv/bin/python main.py fill --week 09/02/2026          # Fill a specific week
+.venv/bin/python main.py fill --week 09/02/2026 --submit # Fill and submit a specific week
 ```
 
 ### Utility scripts
