@@ -1,3 +1,13 @@
+## 0.5.0 (2026-02-26)
+
+### Feat
+
+- add --week option to fill command for targeting specific weeks
+
+### Fix
+
+- update LaunchAgent paths to match project directory
+
 ## 0.4.0 (2026-02-10)
 
 ### Feat
