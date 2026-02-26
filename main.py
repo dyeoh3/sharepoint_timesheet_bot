@@ -19,7 +19,7 @@ LOG_DIR = PROJECT_DIR / "logs"
 
 
 @click.group()
-@click.version_option(version="0.4.0")
+@click.version_option(version="0.5.0")
 def cli():
     """SharePoint Timesheet Bot — automate your weekly timesheet."""
     pass
