@@ -11,7 +11,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/darren/Desktop/Projects/sharepoint_timesheet_bot/scripts/run_timesheet.sh</string>
+        <string>/Users/darren/projects/sharepoint_timesheet_bot/scripts/run_timesheet.sh</string>
     </array>
 
     <!-- Schedule: every Friday at 09:00 -->
@@ -27,14 +27,14 @@
 
     <!-- Working directory -->
     <key>WorkingDirectory</key>
-    <string>/Users/darren/Desktop/Projects/sharepoint_timesheet_bot</string>
+    <string>/Users/darren/projects/sharepoint_timesheet_bot</string>
 
     <!-- Logging (fallback — the wrapper script also logs) -->
     <key>StandardOutPath</key>
-    <string>/Users/darren/Desktop/Projects/sharepoint_timesheet_bot/logs/launchd_stdout.log</string>
+    <string>/Users/darren/projects/sharepoint_timesheet_bot/logs/launchd_stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/darren/Desktop/Projects/sharepoint_timesheet_bot/logs/launchd_stderr.log</string>
+    <string>/Users/darren/projects/sharepoint_timesheet_bot/logs/launchd_stderr.log</string>
 
     <!-- Do NOT run immediately on load — wait for the schedule -->
     <key>RunAtLoad</key>
