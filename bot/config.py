@@ -4,6 +4,7 @@ Configuration loader — reads config.yaml and .env
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
@@ -13,7 +14,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
 
-def load_config(config_path: str | None = None) -> dict:
+def load_config(config_path: str | None = None) -> dict[str, Any]:
     """Load and return the YAML configuration dictionary."""
     path = Path(config_path) if config_path else _PROJECT_ROOT / "config.yaml"
     with open(path, "r") as f:

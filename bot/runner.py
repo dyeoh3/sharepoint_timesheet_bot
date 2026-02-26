@@ -2,6 +2,8 @@
 Main orchestrator — ties together browser, auth, and timesheet page objects.
 """
 
+from datetime import date, timedelta
+
 from bot.browser import BrowserManager
 from bot.config import load_config
 from bot.timesheet import TimesheetEditPage, TimesheetSummaryPage, get_current_week_range
@@ -11,6 +13,7 @@ def run_timesheet_bot(
     config_path: str | None = None,
     dry_run: bool = False,
     submit: bool = False,
+    target_monday: date | None = None,
 ):
     """
     Main entry point: open SharePoint, log in, and fill out the timesheet.
@@ -19,9 +22,14 @@ def run_timesheet_bot(
         config_path: Optional path to a YAML config file.
         dry_run: If True, fill hours but don't save or submit.
         submit: If True, submit the timesheet after saving.
+        target_monday: Optional Monday date for the target week.
     """
     config = load_config(config_path)
-    monday, friday = get_current_week_range()
+    if target_monday is None:
+        monday, friday = get_current_week_range()
+    else:
+        monday = target_monday
+        friday = monday + timedelta(days=4)
     print(f"📅 Filling timesheet for week: {monday} → {friday}")
 
     with BrowserManager(config) as bm:
@@ -39,9 +47,9 @@ def run_timesheet_bot(
             bm.wait_for_manual_login(page)
             summary.navigate()
 
-        # 3. Open (or create) the current week's timesheet
+        # 3. Open (or create) the target week's timesheet
         try:
-            status = summary.open_timesheet()
+            status = summary.open_timesheet(target_monday=target_monday)
             print(f"📋 Timesheet opened (was: {status})")
         except RuntimeError as e:
             print(f"❌ {e}")

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
+from typing import Any
 
 from playwright.sync_api import Locator, Page
 
@@ -1245,7 +1246,7 @@ class TimesheetEditPage:
 
     def fill_week_from_config(
         self,
-        projects: list[dict],
+        projects: list[dict[str, Any]],
         work_days: list[str],
         region: str = "NSW",
         period_start: date | None = None,
